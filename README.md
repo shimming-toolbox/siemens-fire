@@ -1,12 +1,12 @@
 # Creating a chroot disk image for Shimming Toolbox
-This guide walks you through creating a disk image (.img) containing a complete Linux filesystem intended to be used as the root directory for a changed root (chroot) environment. The resulting image can be deployed on MARS system hardware to run Shimming Toolbox locally on the MRI scanner.
+This guide walks you through creating on your computer a disk image (.img) containing a complete Linux filesystem intended to be used as the root directory for a changed root (chroot) environment. The resulting image can be exported and eployed on MARS system hardware to run Shimming Toolbox locally on the MRI scanner.
 
 ## Prerequisites
 
 Before starting, ensure you have:
 - **Docker**: Installed and running on your system
-- **Disk space**: At least 10GB free space for the build process
-- **USB drive**: 8GB+ capacity (recommended) for image transfer
+- **Disk space**: At least 15GB free disk space for the build process
+- **USB drive**: At least 10GB capacity for image transfer
 - **Time**: Allow 20-30 minutes for the complete process
 - **Permissions**: Root/sudo access may be required for some operations
 
@@ -42,7 +42,7 @@ chmod +x ./tar_to_chroot.sh
 ```
 
 ### What happens during this step:
-1. **Docker build**: Creates a Docker image containing Shimming Toolbox and dependencies
+1. **Docker build**: Creates a Docker image containing Shimming Toolbox and its dependencies
 2. **Container export**: Exports the container's filesystem to a tarball
 3. **Image creation**: Converts the tarball to a Linux root filesystem (.img)
 
