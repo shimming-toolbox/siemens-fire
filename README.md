@@ -5,9 +5,9 @@ This guide walks you through creating on your computer a disk image (.img) conta
 
 Before starting, ensure you have:
 - **Docker**: Installed and running on your system
-- **Disk space**: At least 15GB free disk space for the build process
-- **USB drive**: At least 10GB capacity for image transfer
-- **Time**: Allow 20-30 minutes for the complete process
+- **Disk space**: Between 30-35GB free disk space for the build process
+- **USB drive**: At least 8GB capacity for image transfer
+- **Time**: Allow 30-40 minutes for the complete process
 - **Permissions**: Root/sudo access may be required for some operations
 
 ## Overview
@@ -47,8 +47,8 @@ chmod +x ./tar_to_chroot.sh
 3. **Image creation**: Converts the tarball to a Linux root filesystem (.img)
 
 > [!NOTE]
-> **Expected duration:** 12-14 minutes
-> **Output file:** `st_chroot.img` (approximately 9.5GB)
+> **Expected duration:** 14 minutes
+> **Output file:** `st_chroot.img` (approximately 8.8GB)
 
 ---
 
@@ -71,7 +71,7 @@ Compress the image to reduce transfer time and storage requirements:
 zip st_chroot.zip st_chroot.img
 ```
 > [!NOTE]
-> **Output file:** `st_chroot.zip` (approximately 3.5GB)
+> **Output file:** `st_chroot.zip` (approximately 2.6GB)
 
 ### 3.3 Transfer to your USB drive
 
@@ -109,9 +109,9 @@ rm st_chroot.img
 
 | File | Approximate Size |
 |------|------------------|
-| st_chroot.img | 9-10 GB |
-| st_chroot.zip | 3-4 GB |
-| Required USB space | 4+ GB (recommended 8GB+) |
+| st_chroot.img | 8-9 GB |
+| st_chroot.zip | 2-3 GB |
+| Required USB space | 8+ GB |
 
 ---
 

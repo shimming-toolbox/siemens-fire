@@ -39,6 +39,8 @@ echo ----------------------------------------------------------------------
 docker create --name tmpimage ${DOCKER_NAME}
 docker export -o ${EXPORT_FILE} tmpimage
 docker rm tmpimage
+docker rmi ${DOCKER_NAME}
+docker builder prune -a -f
 
 # Run a privileged Docker to create the chroot file
 docker run -it --rm          \
