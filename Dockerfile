@@ -40,10 +40,12 @@ SHELL ["/bin/bash", "-c"]
 RUN echo 'source /opt/code/shimming-toolbox/python/etc/profile.d/conda.sh' >> ~/.bashrc && \
     echo 'conda activate /opt/code/shimming-toolbox/python' >> ~/.bashrc
 
-# TODO : Add ST modules
+# Add ST modules
+COPY ./python_modules/st_masking.py    /opt/code/python-ismrmrd-server
+COPY ./python_modules/st_masking.json  /opt/code/python-ismrmrd-server
 
 # Set the starting directory so that code can use relative paths
-WORKDIR /opt/code/shimming-toolbox
+WORKDIR /opt/code/python-ismrmrd-server
 
 # Clean up to reduce image size
 RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
