@@ -3,7 +3,6 @@ import os
 import logging
 import traceback
 import numpy as np
-import matplotlib.pyplot as plt
 import xml.dom.minidom
 import base64
 import mrdhelper

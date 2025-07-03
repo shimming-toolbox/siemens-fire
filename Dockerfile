@@ -30,10 +30,17 @@ RUN mkdir /opt/code/prelude && \
     curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
     sudo install /opt/code/prelude/prelude /usr/local/bin
 
+# Install BET
+RUN mkdir /opt/code/bet && \
+    curl -o /opt/code/bet/bet -JL https://github.com/shimming-toolbox/binaries/raw/master/bet && \
+    sudo install /opt/code/bet/bet /usr/local/bin
+
 # Activate ST environment
 SHELL ["/bin/bash", "-c"]
 RUN echo 'source /opt/code/shimming-toolbox/python/etc/profile.d/conda.sh' >> ~/.bashrc && \
     echo 'conda activate /opt/code/shimming-toolbox/python' >> ~/.bashrc
+
+# TODO : Add ST modules
 
 # Set the starting directory so that code can use relative paths
 WORKDIR /opt/code/shimming-toolbox
