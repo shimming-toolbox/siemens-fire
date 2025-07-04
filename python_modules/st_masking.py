@@ -7,6 +7,7 @@ import xml.dom.minidom
 import base64
 import mrdhelper
 import constants
+import subprocess
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
@@ -129,15 +130,24 @@ def process_image(imgGroup, connection, config, mrdHeader):
     np.save(debugFolder + "/" + "imgOrig.npy", data)
 
     #TODO: Convert MRD image to NIFTI image
+    # mrd2dicom.py + st_dicom_to_nifti ?
 
     if mrdhelper.get_json_config_param(config, 'method') == 'threshold':
-        pass #TODO: Implement thresholding
+        fname_input_nii = debugFolder + '/img.nii.gz' # TODO: modify to respect BIDS convention
+        fname_output_mask_nii = debugFolder + '/mask.nii.gz' # TODO: modify to respect BIDS convention
+        subprocess.run(['st_mask', 'threshold',
+                        '-i', fname_input_nii,
+                        '--thr', mrdhelper.get_json_config_param(config, 'value'),
+                        '-o', fname_output_mask_nii],
+                        check=True)
 
     if mrdhelper.get_json_config_param(config, 'method') == 'sct_deepseg':
         pass #TODO: Implement SCT_deepseg
 
     if mrdhelper.get_json_config_param(config, 'method') == 'bet':
         pass #TODO: Implement BET
+
+    #TODO: Convert nifti image to MRD image
 
     currentSeries = 0
 
