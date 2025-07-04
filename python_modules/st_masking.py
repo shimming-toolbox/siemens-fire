@@ -130,7 +130,7 @@ def process_image(imgGroup, connection, config, mrdHeader):
     np.save(debugFolder + "/" + "imgOrig.npy", data)
 
     #TODO: Convert MRD image to NIFTI image
-    # mrd2dicom.py + st_dicom_to_nifti ?
+    # see https://github.com/shimming-toolbox/mrd2nii/tree/main
 
     if mrdhelper.get_json_config_param(config, 'method') == 'threshold':
         fname_input_nii = debugFolder + '/img.nii.gz' # TODO: modify to respect BIDS convention
@@ -168,11 +168,6 @@ def process_image(imgGroup, connection, config, mrdHeader):
         # Set the image_type to match the data_type for complex data
         if (imagesOut[iImg].data_type == ismrmrd.DATATYPE_CXFLOAT) or (imagesOut[iImg].data_type == ismrmrd.DATATYPE_CXDOUBLE):
             oldHeader.image_type = ismrmrd.IMTYPE_COMPLEX
-
-        if mrdhelper.get_json_config_param(config, 'options') == 'rgb':
-            # Set RGB parameters
-            oldHeader.image_type = 6  # To be defined as ismrmrd.IMTYPE_RGB
-            oldHeader.channels   = 3  # RGB "channels".  This is set by from_array, but need to be explicit as we're copying the old header instead
 
         # Unused example, as images are grouped by series before being passed into this function now
         # oldHeader.image_series_index = currentSeries
