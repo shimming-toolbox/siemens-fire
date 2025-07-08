@@ -30,11 +30,6 @@ RUN mkdir /opt/code/prelude && \
     curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
     sudo install /opt/code/prelude/prelude /usr/local/bin
 
-# Install BET
-RUN mkdir /opt/code/bet && \
-    curl -o /opt/code/bet/bet -JL https://github.com/shimming-toolbox/binaries/raw/master/bet && \
-    sudo install /opt/code/bet/bet /usr/local/bin
-
 # Activate ST environment
 SHELL ["/bin/bash", "-c"]
 RUN echo 'source /opt/code/shimming-toolbox/python/etc/profile.d/conda.sh' >> ~/.bashrc && \
