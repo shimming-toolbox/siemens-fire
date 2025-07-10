@@ -25,20 +25,19 @@ RUN mkdir -p /opt/code/shimming-toolbox && \
     cd /opt/code/shimming-toolbox && \
     make install PLUGIN=false
 
+# Activate ST environment
+SHELL ["/bin/bash", "-c"]
+RUN echo 'source /opt/code/shimming-toolbox/python/etc/profile.d/conda.sh' >> ~/.bashrc && \
+    echo 'conda activate /opt/code/shimming-toolbox/python' >> ~/.bashrc
+
 # Install prelude
 RUN mkdir /opt/code/prelude && \
     curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
     sudo install /opt/code/prelude/prelude /usr/local/bin
 
 # Install bet2
-RUN mkdir /opt/code/bet2 && \
-    curl -o /opt/code/bet2/bet2 -JL https://github.com/shimming-toolbox/binaries/raw/ag/add_bet/bet2 && \
-    sudo install /opt/code/bet2/bet2 /usr/local/bin
-
-# Activate ST environment
-SHELL ["/bin/bash", "-c"]
-RUN echo 'source /opt/code/shimming-toolbox/python/etc/profile.d/conda.sh' >> ~/.bashrc && \
-    echo 'conda activate /opt/code/shimming-toolbox/python' >> ~/.bashrc
+RUN source ~/shimming-toolbox/python/bin/activate && \
+    conda install -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge fsl-bet2
 
 # Add ST modules
 COPY ./python_modules/st_masking.py    /opt/code/python-ismrmrd-server
