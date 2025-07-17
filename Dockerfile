@@ -13,7 +13,7 @@ RUN apt-get update && \
 RUN mkdir -p /opt/code/python-ismrmrd-server && \
     git clone https://github.com/kspaceKelvin/python-ismrmrd-server.git /opt/code/python-ismrmrd-server
 
-# Install SCT
+# # Install SCT
 RUN mkdir -p /opt/code/spinal-cord-toolbox && \
     git clone --branch 7.0 --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinal-cord-toolbox && \
     cd /opt/code/spinal-cord-toolbox && \
@@ -25,26 +25,33 @@ RUN mkdir -p /opt/code/shimming-toolbox && \
     cd /opt/code/shimming-toolbox && \
     make install PLUGIN=false
 
-# Activate ST environment
+# Create the conda environment
 SHELL ["/bin/bash", "-c"]
-RUN echo 'source /opt/code/shimming-toolbox/python/etc/profile.d/conda.sh' >> ~/.bashrc && \
-    echo 'conda activate /opt/code/shimming-toolbox/python' >> ~/.bashrc
+RUN cd /opt/code/shimming-toolbox/shimming-toolbox && \
+    source /root/shimming-toolbox/python/etc/profile.d/conda.sh && \
+    conda create -n shim-dev -c conda-forge dcm2niix python=3.10 && \
+    pip install -e ."[docs,dev]"
 
+# Activate automatically the conda environment when the container starts
+RUN echo 'source root/shimming-toolbox/python/etc/profile.d/conda.sh' >> ~/.bashrc && \
+    echo 'conda activate shim-dev' >> ~/.bashrc
+
+# Install bet2
+RUN source /root/shimming-toolbox/python/etc/profile.d/conda.sh && \
+    source /root/shimming-toolbox/python/bin/activate && \
+    conda activate shim-dev && \
+    conda install -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge fsl-bet2
+    
 # Install prelude
 RUN mkdir /opt/code/prelude && \
     curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
     sudo install /opt/code/prelude/prelude /usr/local/bin
 
-# Install bet2
-RUN source ~/shimming-toolbox/python/bin/activate && \
-    conda install -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge fsl-bet2
-
 # Add ST modules
 COPY ./python_modules/st_masking.py    /opt/code/python-ismrmrd-server
 COPY ./python_modules/st_masking.json  /opt/code/python-ismrmrd-server
-
-# Set the starting directory so that code can use relative paths
-WORKDIR /opt/code/python-ismrmrd-server
+# Set the st_masking module as the default module
+CMD [ "python3", "/opt/code/python-ismrmrd-server/main.py", "-v", "-H=0.0.0.0", "-p=9002", "-l=/tmp/python-ismrmrd-server.log", "-d=st_masking"]
 
 # Clean up to reduce image size
 RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
