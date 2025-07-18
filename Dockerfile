@@ -9,22 +9,55 @@ RUN apt-get update && \
                     libglib2.0-0 libgl1 libxrender1 libxkbcommon-x11-0 libdbus-1-3 && \
     apt-get clean
 
-# Clone the latest version of python-ismrmrd-server
+# Clone the python-ismrmrd-server repository
 RUN mkdir -p /opt/code/python-ismrmrd-server && \
     git clone https://github.com/kspaceKelvin/python-ismrmrd-server.git /opt/code/python-ismrmrd-server
+# Remove unecessary files
+RUN rm -rf /opt/code/python-ismrmrd-server/.git && \
+    rm -rf /opt/code/python-ismrmrd-server/.github/workflows && \
+    rm -rf /opt/code/python-ismrmrd-server/.gitattributes && \
+    rm -rf /opt/code/python-ismrmrd-server/.gitignore && \
+    rm -rf /opt/code/python-ismrmrd-server/.vscode && \
+    rm -rf /opt/code/python-ismrmrd-server/custom && \
+    rm -rf /opt/code/python-ismrmrd-server/doc && \
+    rm -rf /opt/code/python-ismrmrd-server/docker && \
+    rm -rf /opt/code/python-ismrmrd-server/RunClientServerRecon.ipynb && \
+    rm -rf /opt/code/python-ismrmrd-server/RunServerRecon.ipynb && \
+    rm -rf /opt/code/python-ismrmrd-server/mrd2gif.py && \
+    rm -rf /opt/code/python-ismrmrd-server/invertcontrast.py && \
+    rm -rf /opt/code/python-ismrmrd-server/invertcontrast.json && \
+    rm -rf /opt/code/python-ismrmrd-server/simplefft.py && \
+    rm -rf /opt/code/python-ismrmrd-server/analyzeflow.py && \
+    rm -rf /opt/code/python-ismrmrd-server/report.py
 
-# # Install SCT
+# Clone the spinal-cord-toolbox repository and install it
 RUN mkdir -p /opt/code/spinal-cord-toolbox && \
     git clone --branch 7.0 --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinal-cord-toolbox && \
     cd /opt/code/spinal-cord-toolbox && \
     ./install_sct -y
+# Remove unecessary files
+RUN rm -rf /opt/code/spinal-cord-toolbox/.git && \
+    rm -rf /opt/code/spinal-cord-toolbox/.github && \
+    rm -rf /opt/code/spinal-cord-toolbox/.gitignore && \
+    rm -rf /opt/code/spinal-cord-toolbox/.ci.sh && \
+    rm -rf /opt/code/spinal-cord-toolbox/.readthedocs.yaml && \
+    rm -rf /opt/code/spinal-cord-toolbox/contrib && \
+    rm -rf /opt/code/spinal-cord-toolbox/documentation && \
+    rm -rf /opt/code/spinal-cord-toolbox/testing && \
+    rm -rf /opt/code/spinal-cord-toolbox/CONTRIBUTING.rst && \
+    rm -rf /opt/code/spinal-cord-toolbox/MANIFEST.in && \
+    rm -rf /opt/code/spinal-cord-toolbox/batch_processing.sh && \
+    rm -rf /opt/code/spinal-cord-toolbox/install_sct && \
+    rm -rf /opt/code/spinal-cord-toolbox/install_sct.bat && \
+    rm -rf /opt/code/spinal-cord-toolbox/requirements.txt && \
+    rm -rf /opt/code/spinal-cord-toolbox/setup.cfg && \
+    rm -rf /opt/code/spinal-cord-toolbox/setup.py
 
-# Install ST
+# Clone the shimming-toolbox repository and install it
 RUN mkdir -p /opt/code/shimming-toolbox && \
     git clone --branch 1.2 --depth 1 https://github.com/shimming-toolbox/shimming-toolbox.git /opt/code/shimming-toolbox && \
     cd /opt/code/shimming-toolbox && \
     make install PLUGIN=false
-
 # Create the conda environment
 SHELL ["/bin/bash", "-c"]
 RUN cd /opt/code/shimming-toolbox/shimming-toolbox && \
@@ -33,10 +66,27 @@ RUN cd /opt/code/shimming-toolbox/shimming-toolbox && \
     conda activate shim-dev && \
     pip install numpy==1.26.4 h5py==3.14.0 && \
     pip install -e ."[docs,dev]"
-
 # Activate automatically the conda environment when the container starts
 RUN echo 'source root/shimming-toolbox/python/etc/profile.d/conda.sh' >> ~/.bashrc && \
     echo 'conda activate shim-dev' >> ~/.bashrc
+# Remove unecessary files
+RUN rm -rf /opt/code/shimming-toolbox/.git && \
+    rm -rf /opt/code/shimming-toolbox/.github && \
+    rm -rf /opt/code/shimming-toolbox/.gitignore && \
+    rm -rf /opt/code/shimming-toolbox/.coveragerc && \
+    rm -rf /opt/code/shimming-toolbox/.pre-commit-config.yaml && \
+    rm -rf /opt/code/shimming-toolbox/docs && \
+    rm -rf /opt/code/shimming-toolbox/examples && \
+    rm -rf /opt/code/shimming-toolbox/installer && \
+    rm -rf /opt/code/shimming-toolbox/Makefile && \
+    rm -rf /opt/code/shimming-toolbox/readthedocs.yml && \
+    rm rm -rf /opt/code/shimming-toolbox/shimming-toolbox/test && \
+    rm -rf /opt/code/shimming-toolbox/shimming-toolbox/.github && \
+    rm -rf /opt/code/shimming-toolbox/shimming-toolbox/MANIFEST.in && \
+    rm -rf /opt/code/shimming-toolbox/shimming-toolbox/conftest.py && \
+    rm -rf /opt/code/shimming-toolbox/shimming-toolbox/pytest.ini && \
+    rm -rf /opt/code/shimming-toolbox/shimming-toolbox/requirements_st.txt && \
+    rm -rf /opt/code/shimming-toolbox/shimming-toolbox/setup.py
 
 # Install bet2
 RUN source /root/shimming-toolbox/python/etc/profile.d/conda.sh && \
@@ -57,12 +107,7 @@ CMD [ "python3", "/opt/code/python-ismrmrd-server/main.py", "-v", "-H=0.0.0.0", 
 
 # Clean up to reduce image size
 RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
-    rm -rf /opt/code/spinal-cord-toolbox/.git /opt/code/shimming-toolbox/.git /opt/code/python-ismrmrd-server/.git && \
     rm -rf /root/.cache/pip && \
     rm -rf /var/cache/apt/archives && \
-    find /opt/code -name "*.pyc" -delete && \
-    find /opt/code -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true && \
-    rm -rf /opt/code/*/docs /opt/code/*/examples /opt/code/*/tests && \
-    rm -rf /opt/code/spinal-cord-toolbox/data/PAM50 /opt/code/spinal-cord-toolbox/data/template && \
     apt-get autoremove -y && \
     apt-get autoclean
