@@ -30,6 +30,8 @@ SHELL ["/bin/bash", "-c"]
 RUN cd /opt/code/shimming-toolbox/shimming-toolbox && \
     source /root/shimming-toolbox/python/etc/profile.d/conda.sh && \
     conda create -n shim-dev -c conda-forge dcm2niix python=3.10 && \
+    conda activate shim-dev && \
+    pip install numpy==1.26.4 h5py==3.14.0 && \
     pip install -e ."[docs,dev]"
 
 # Activate automatically the conda environment when the container starts
