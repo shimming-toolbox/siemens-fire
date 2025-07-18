@@ -8,6 +8,7 @@ import base64
 import mrdhelper
 import constants
 import subprocess
+import nibabel as nib
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
@@ -115,50 +116,45 @@ def process_image(imgGroup, connection, config, mrdHeader):
     data = np.stack([img.data                              for img in imgGroup])
     head = [img.getHead()                                  for img in imgGroup]
     meta = [ismrmrd.Meta.deserialize(img.attribute_string) for img in imgGroup]
+    # TODO : Verify if necessary or adapt for new MRD version
 
-    # Reformat data to [y x z cha img], i.e. [row col] for the first two dimensions
-    data = data.transpose((3, 4, 2, 1, 0))
+    # Convert the MRD images to NIfTI format
+    fname_input_mrd = None #TODO to identify
+    fname_input_nii = debugFolder + '/imgOrig.nii.gz'
+    subprocess.run(['mrd2nii', fname_input_mrd, fname_input_nii], check=True)
 
-    # Display MetaAttributes for first image
-    logging.debug("MetaAttributes[0]: %s", ismrmrd.Meta.serialize(meta[0]))
-
-    # Optional serialization of ICE MiniHeader
-    if 'IceMiniHead' in meta[0]:
-        logging.debug("IceMiniHead[0]: %s", base64.b64decode(meta[0]['IceMiniHead']).decode('utf-8'))
-
-    logging.debug("Original image data is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "imgOrig.npy", data)
-
-    #TODO: Convert MRD image to NIFTI image
-    # see https://github.com/shimming-toolbox/mrd2nii/tree/main
-
+    # Create the mask with the threshold method
     if mrdhelper.get_json_config_param(config, 'method') == 'threshold':
-        fname_input_nii = debugFolder + '/img.nii.gz' # TODO: modify to respect BIDS convention
-        fname_output_mask_nii = debugFolder + '/mask.nii.gz' # TODO: modify to respect BIDS convention
+        fname_output_mask_nii = debugFolder + '/mask_threshold.nii.gz'
         subprocess.run(['st_mask', 'threshold',
                         '-i', fname_input_nii,
                         '--thr', mrdhelper.get_json_config_param(config, 'value'),
                         '-o', fname_output_mask_nii],
                         check=True)
 
+    # Create the mask with the SC segmentation method
     if mrdhelper.get_json_config_param(config, 'method') == 'sct_deepseg':
         pass #TODO: Implement SCT_deepseg
+        # Install the model if not already installed
 
+    # Create the mask with the brain segmentation method
     if mrdhelper.get_json_config_param(config, 'method') == 'bet':
         pass #TODO: Implement BET
 
-    #TODO: Convert nifti image to MRD image
+    output_mask_nii = nib.load(fname_output_mask_nii)
+    data = output_mask_nii.get_fdata()
 
     currentSeries = 0
 
     # Re-slice back into 2D images
     imagesOut = [None] * data.shape[-1]
     for iImg in range(data.shape[-1]):
-        # Create new MRD instance for the inverted image
+        # Create new MRD instance for the mask
         # Transpose from convenience shape of [y x z cha] to MRD Image shape of [cha z y x]
         # from_array() should be called with 'transpose=False' to avoid warnings, and when called
         # with this option, can take input as: [cha z y x], [z y x], or [y x]
         imagesOut[iImg] = ismrmrd.Image.from_array(data[...,iImg].transpose((3, 2, 0, 1)), transpose=False)
+        # TODO: Verify if the transpose is needed
 
         # Create a copy of the original fixed header and update the data_type
         # (we changed it to int16 from all other types)
@@ -168,9 +164,6 @@ def process_image(imgGroup, connection, config, mrdHeader):
         # Set the image_type to match the data_type for complex data
         if (imagesOut[iImg].data_type == ismrmrd.DATATYPE_CXFLOAT) or (imagesOut[iImg].data_type == ismrmrd.DATATYPE_CXDOUBLE):
             oldHeader.image_type = ismrmrd.IMTYPE_COMPLEX
-
-        # Unused example, as images are grouped by series before being passed into this function now
-        # oldHeader.image_series_index = currentSeries
 
         # Increment series number when flag detected (i.e. follow ICE logic for splitting series)
         if mrdhelper.get_meta_value(meta[iImg], 'IceMiniHead') is not None:
