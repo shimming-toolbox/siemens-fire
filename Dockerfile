@@ -9,49 +9,49 @@ RUN apt-get update && \
                     libglib2.0-0 libgl1 libxrender1 libxkbcommon-x11-0 libdbus-1-3 && \
     apt-get clean
 
-# # Clone the python-ismrmrd-server repository
-# RUN mkdir -p /opt/code/python-ismrmrd-server && \
-#     git clone https://github.com/kspaceKelvin/python-ismrmrd-server.git /opt/code/python-ismrmrd-server
-# # Remove unecessary files
-# RUN rm -rf /opt/code/python-ismrmrd-server/.git && \
-#     rm -rf /opt/code/python-ismrmrd-server/.github/workflows && \
-#     rm -rf /opt/code/python-ismrmrd-server/.gitattributes && \
-#     rm -rf /opt/code/python-ismrmrd-server/.gitignore && \
-#     rm -rf /opt/code/python-ismrmrd-server/.vscode && \
-#     rm -rf /opt/code/python-ismrmrd-server/custom && \
-#     rm -rf /opt/code/python-ismrmrd-server/doc && \
-#     rm -rf /opt/code/python-ismrmrd-server/docker && \
-#     rm -rf /opt/code/python-ismrmrd-server/RunClientServerRecon.ipynb && \
-#     rm -rf /opt/code/python-ismrmrd-server/RunServerRecon.ipynb && \
-#     rm -rf /opt/code/python-ismrmrd-server/mrd2gif.py && \
-#     rm -rf /opt/code/python-ismrmrd-server/invertcontrast.py && \
-#     rm -rf /opt/code/python-ismrmrd-server/invertcontrast.json && \
-#     rm -rf /opt/code/python-ismrmrd-server/simplefft.py && \
-#     rm -rf /opt/code/python-ismrmrd-server/analyzeflow.py && \
-#     rm -rf /opt/code/python-ismrmrd-server/report.py
+# Clone the python-ismrmrd-server repository
+RUN mkdir -p /opt/code/python-ismrmrd-server && \
+    git clone https://github.com/kspaceKelvin/python-ismrmrd-server.git /opt/code/python-ismrmrd-server
+# Remove unecessary files
+RUN rm -rf /opt/code/python-ismrmrd-server/.git && \
+    rm -rf /opt/code/python-ismrmrd-server/.github/workflows && \
+    rm -rf /opt/code/python-ismrmrd-server/.gitattributes && \
+    rm -rf /opt/code/python-ismrmrd-server/.gitignore && \
+    rm -rf /opt/code/python-ismrmrd-server/.vscode && \
+    rm -rf /opt/code/python-ismrmrd-server/custom && \
+    rm -rf /opt/code/python-ismrmrd-server/doc && \
+    rm -rf /opt/code/python-ismrmrd-server/docker && \
+    rm -rf /opt/code/python-ismrmrd-server/RunClientServerRecon.ipynb && \
+    rm -rf /opt/code/python-ismrmrd-server/RunServerRecon.ipynb && \
+    rm -rf /opt/code/python-ismrmrd-server/mrd2gif.py && \
+    rm -rf /opt/code/python-ismrmrd-server/invertcontrast.py && \
+    rm -rf /opt/code/python-ismrmrd-server/invertcontrast.json && \
+    rm -rf /opt/code/python-ismrmrd-server/simplefft.py && \
+    rm -rf /opt/code/python-ismrmrd-server/analyzeflow.py && \
+    rm -rf /opt/code/python-ismrmrd-server/report.py
 
-# # Clone the spinal-cord-toolbox repository and install it
-# RUN mkdir -p /opt/code/spinal-cord-toolbox && \
-#     git clone --branch 7.0 --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinal-cord-toolbox && \
-#     cd /opt/code/spinal-cord-toolbox && \
-#     ./install_sct -y
-# # Remove unecessary files
-# RUN rm -rf /opt/code/spinal-cord-toolbox/.git && \
-#     rm -rf /opt/code/spinal-cord-toolbox/.github && \
-#     rm -rf /opt/code/spinal-cord-toolbox/.gitignore && \
-#     rm -rf /opt/code/spinal-cord-toolbox/.ci.sh && \
-#     rm -rf /opt/code/spinal-cord-toolbox/.readthedocs.yaml && \
-#     rm -rf /opt/code/spinal-cord-toolbox/contrib && \
-#     rm -rf /opt/code/spinal-cord-toolbox/documentation && \
-#     rm -rf /opt/code/spinal-cord-toolbox/testing && \
-#     rm -rf /opt/code/spinal-cord-toolbox/CONTRIBUTING.rst && \
-#     rm -rf /opt/code/spinal-cord-toolbox/MANIFEST.in && \
-#     rm -rf /opt/code/spinal-cord-toolbox/batch_processing.sh && \
-#     rm -rf /opt/code/spinal-cord-toolbox/install_sct && \
-#     rm -rf /opt/code/spinal-cord-toolbox/install_sct.bat && \
-#     rm -rf /opt/code/spinal-cord-toolbox/requirements.txt && \
-#     rm -rf /opt/code/spinal-cord-toolbox/setup.cfg && \
-#     rm -rf /opt/code/spinal-cord-toolbox/setup.py
+# Clone the spinal-cord-toolbox repository and install it
+RUN mkdir -p /opt/code/spinal-cord-toolbox && \
+    git clone --branch 7.0 --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinal-cord-toolbox && \
+    cd /opt/code/spinal-cord-toolbox && \
+    ./install_sct -y
+# Remove unecessary files
+RUN rm -rf /opt/code/spinal-cord-toolbox/.git && \
+    rm -rf /opt/code/spinal-cord-toolbox/.github && \
+    rm -rf /opt/code/spinal-cord-toolbox/.gitignore && \
+    rm -rf /opt/code/spinal-cord-toolbox/.ci.sh && \
+    rm -rf /opt/code/spinal-cord-toolbox/.readthedocs.yaml && \
+    rm -rf /opt/code/spinal-cord-toolbox/contrib && \
+    rm -rf /opt/code/spinal-cord-toolbox/documentation && \
+    rm -rf /opt/code/spinal-cord-toolbox/testing && \
+    rm -rf /opt/code/spinal-cord-toolbox/CONTRIBUTING.rst && \
+    rm -rf /opt/code/spinal-cord-toolbox/MANIFEST.in && \
+    rm -rf /opt/code/spinal-cord-toolbox/batch_processing.sh && \
+    rm -rf /opt/code/spinal-cord-toolbox/install_sct && \
+    rm -rf /opt/code/spinal-cord-toolbox/install_sct.bat && \
+    rm -rf /opt/code/spinal-cord-toolbox/requirements.txt && \
+    rm -rf /opt/code/spinal-cord-toolbox/setup.cfg && \
+    rm -rf /opt/code/spinal-cord-toolbox/setup.py
 
 # Clone the shimming-toolbox repository and install it
 RUN mkdir -p /opt/code/shimming-toolbox && \
@@ -97,26 +97,26 @@ RUN mkdir -p /opt/code/mrd2nii && \
     conda activate shim-dev && \
     pip install -e .
 
-# # Install bet2
-# RUN source /root/shimming-toolbox/python/etc/profile.d/conda.sh && \
-#     source /root/shimming-toolbox/python/bin/activate && \
-#     conda activate shim-dev && \
-#     conda install -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge fsl-bet2
+# Install bet2
+RUN source /root/shimming-toolbox/python/etc/profile.d/conda.sh && \
+    source /root/shimming-toolbox/python/bin/activate && \
+    conda activate shim-dev && \
+    conda install -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge fsl-bet2
     
-# # Install prelude
-# RUN mkdir /opt/code/prelude && \
-#     curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
-#     sudo install /opt/code/prelude/prelude /usr/local/bin
+# Install prelude
+RUN mkdir /opt/code/prelude && \
+    curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
+    sudo install /opt/code/prelude/prelude /usr/local/bin
 
-# # Add ST modules
-# COPY ./python_modules/st_masking.py    /opt/code/python-ismrmrd-server
-# COPY ./python_modules/st_masking.json  /opt/code/python-ismrmrd-server
-# # Set the st_masking module as the default module
-# CMD [ "python3", "/opt/code/python-ismrmrd-server/main.py", "-v", "-H=0.0.0.0", "-p=9002", "-l=/tmp/python-ismrmrd-server.log", "-d=st_masking"]
+# Add ST modules
+COPY ./python_modules/st_masking.py    /opt/code/python-ismrmrd-server
+COPY ./python_modules/st_masking.json  /opt/code/python-ismrmrd-server
+# Set the st_masking module as the default module
+CMD [ "python3", "/opt/code/python-ismrmrd-server/main.py", "-v", "-H=0.0.0.0", "-p=9002", "-l=/tmp/python-ismrmrd-server.log", "-d=st_masking"]
 
-# # Clean up to reduce image size
-# RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
-#     rm -rf /root/.cache/pip && \
-#     rm -rf /var/cache/apt/archives && \
-#     apt-get autoremove -y && \
-#     apt-get autoclean
+# Clean up to reduce image size
+RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    rm -rf /root/.cache/pip && \
+    rm -rf /var/cache/apt/archives && \
+    apt-get autoremove -y && \
+    apt-get autoclean
