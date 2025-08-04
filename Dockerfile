@@ -112,7 +112,7 @@ RUN mkdir /opt/code/prelude && \
 COPY ./python_modules/st_masking.py    /opt/code/python-ismrmrd-server
 COPY ./python_modules/st_masking.json  /opt/code/python-ismrmrd-server
 # Set the st_masking module as the default module
-CMD [ "python3", "/opt/code/python-ismrmrd-server/main.py", "-v", "-H=0.0.0.0", "-p=9002", "-l=/tmp/python-ismrmrd-server.log", "-d=st_masking"]
+CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate shim-dev && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking"]
 
 # Clean up to reduce image size
 RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
