@@ -3,6 +3,9 @@ FROM kspacekelvin/fire-python-devcon
 # Avoid interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Set the timezone to ensure good timestamps in logfiles
+ENV TZ=America/Toronto
+
 # Install system dependencies
 RUN apt-get update && \
     apt-get install -y git make curl sudo xvfb bzip2 gcc g++ python3-pip \
@@ -24,10 +27,7 @@ RUN rm -rf /opt/code/python-ismrmrd-server/.git && \
     rm -rf /opt/code/python-ismrmrd-server/RunClientServerRecon.ipynb && \
     rm -rf /opt/code/python-ismrmrd-server/RunServerRecon.ipynb && \
     rm -rf /opt/code/python-ismrmrd-server/mrd2gif.py && \
-    rm -rf /opt/code/python-ismrmrd-server/invertcontrast.py && \
     rm -rf /opt/code/python-ismrmrd-server/invertcontrast.json && \
-    rm -rf /opt/code/python-ismrmrd-server/simplefft.py && \
-    rm -rf /opt/code/python-ismrmrd-server/analyzeflow.py && \
     rm -rf /opt/code/python-ismrmrd-server/report.py
 
 # Clone the spinal-cord-toolbox repository and install it
