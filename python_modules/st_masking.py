@@ -2,6 +2,7 @@ import ismrmrd
 import os
 import logging
 import traceback
+import json
 import numpy as np
 import numpy.fft as fft
 import xml.dom.minidom
@@ -13,6 +14,7 @@ import subprocess
 import nibabel as nib
 import shutil
 from time import perf_counter
+import glob
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
@@ -251,6 +253,20 @@ def process_raw(acqGroup, connection, config, mrdHeader):
 
 
 def process_image(imgGroup, connection, config, mrdHeader):
+    config_filename = f"{config}.json"
+    config_path = None
+    search_dir = "/opt/code/python-ismrmrd-server/"
+    for file in glob.glob(os.path.join(search_dir, "*.json")):
+        if os.path.basename(file) == config_filename:
+            config_path = file
+            break
+
+    if config_path is None:
+        raise FileNotFoundError(f"Could not find {config_filename} in {search_dir}.")
+
+    with open(config_path, "r") as f:
+        config_dict = json.load(f)
+
     if len(imgGroup) == 0:
         return []
 
@@ -307,38 +323,38 @@ def process_image(imgGroup, connection, config, mrdHeader):
     fname_output_mask_nii = debugFolder + '/mask_threshold.nii.gz'
 
     # Create the mask with the threshold method
-    if mrdhelper.get_json_config_param(config, 'method') == 'threshold':
+    if mrdhelper.get_json_config_param(config_dict, 'method') == 'threshold':
         fname_output_mask_nii = debugFolder + '/mask_threshold.nii.gz'
         subprocess.run(['st_mask', 'threshold',
                         '-i', fname_input_nii,
-                        '--thr', mrdhelper.get_json_config_param(config, 'value'),
+                        '--thr', mrdhelper.get_json_config_param(config_dict, 'value'),
                         '-o', fname_output_mask_nii],
                         check=True)
         output_mask_nii = nib.load(fname_output_mask_nii)
-        data = output_mask_nii.get_fdata()
+        out = output_mask_nii.get_fdata()
 
     # Create the mask with the SC segmentation method
-    elif mrdhelper.get_json_config_param(config, 'method') == 'sct_deepseg':
-        raise NotImplementedError(f"Method {mrdhelper.get_json_config_param(config, 'method')} is not implemented yet")
+    elif mrdhelper.get_json_config_param(config_dict, 'method') == 'sct_deepseg':
+        raise NotImplementedError(f"Method {mrdhelper.get_json_config_param(config_dict, 'method')} is not implemented yet")
 
     # Create the mask with the brain segmentation method
-    elif mrdhelper.get_json_config_param(config, 'method') == 'bet':
-        raise NotImplementedError(f"Method {mrdhelper.get_json_config_param(config, 'method')} is not implemented yet")
+    elif mrdhelper.get_json_config_param(config_dict, 'method') == 'bet':
+        raise NotImplementedError(f"Method {mrdhelper.get_json_config_param(config_dict, 'method')} is not implemented yet")
 
     else :
-        raise RuntimeError(f"Method {mrdhelper.get_json_config_param(config, 'method')} is not available. Options are : \
+        raise RuntimeError(f"Method {mrdhelper.get_json_config_param(config_dict, 'method')} is not available. Options are : \
                            'threshold', 'sct_deepseg' and 'bet'.")
 
     currentSeries = 0
 
     # Re-slice back into 2D images
-    imagesOut = [None] * data.shape[-1]
-    for iImg in range(data.shape[-1]):
+    imagesOut = [None] * out.shape[-1]
+    for iImg in range(out.shape[-1]):
         # Create new MRD instance for the mask
         # Transpose from convenience shape of [y x z cha] to MRD Image shape of [cha z y x]
         # from_array() should be called with 'transpose=False' to avoid warnings, and when called
         # with this option, can take input as: [cha z y x], [z y x], or [y x]
-        imagesOut[iImg] = ismrmrd.Image.from_array(data[...,iImg].transpose((3, 2, 0, 1)), transpose=False)
+        imagesOut[iImg] = ismrmrd.Image.from_array(out[...,iImg].transpose((3, 2, 0, 1)), transpose=False)
         # TODO: Verify if the transpose is needed
 
         # Create a copy of the original fixed header and update the data_type
@@ -359,7 +375,7 @@ def process_image(imgGroup, connection, config, mrdHeader):
         tmpMeta['ImageProcessingHistory']         = ['PYTHON', 'THRESHOLD'] #TODO : May need to be updated
         tmpMeta['SequenceDescriptionAdditional']  = 'FIRE'
         tmpMeta['Keep_image_geometry']            = 1
-        # TODO : Add other attributes for other methohds yet to be implemented if necessary
+        # TODO : Add other attributes for other methods yet to be implemented if necessary
 
         # Add image orientation directions to MetaAttributes if not already present
         if tmpMeta.get('ImageRowDir') is None:
@@ -375,7 +391,7 @@ def process_image(imgGroup, connection, config, mrdHeader):
         imagesOut[iImg].attribute_string = metaXml
 
     # Send a copy of original (unmodified) images back too
-    if mrdhelper.get_json_config_param(config, 'sendOriginal', default=False, type='bool') == True:
+    if mrdhelper.get_json_config_param(config_dict, 'sendOriginal', default=False, type='bool') == True:
         logging.info('Sending a copy of original unmodified images due to sendOriginal set to True')
         # In reverse order so that they'll be in correct order as we insert them to the front of the list
         for image in reversed(imgGroup):
