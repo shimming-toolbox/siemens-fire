@@ -305,7 +305,7 @@ def process_image(imgGroup, connection, config, mrdHeader):
     mrd2nii_folder = debugFolder + "/mrd2nii_conversion"
     if not os.path.exists(mrd2nii_folder):
         os.makedirs(mrd2nii_folder)
-    fname_input_mrd = connection.mrdFilePath # Currently returns None. TODO: Should be changed the path to the .h5 file
+    fname_input_mrd = connection.mrdFilePath
     fname_copied_mrd = os.path.join(mrd2nii_folder, "imgOrig.h5")
     shutil.copy(fname_input_mrd, fname_copied_mrd)
 
