@@ -281,25 +281,15 @@ def process_image(imgGroup, connection, config, mrdHeader):
 
     logging.debug("Processing data with %d images of type %s", len(imgGroup), ismrmrd.get_dtype_from_data_type(imgGroup[0].data_type))
 
-    # Note: The MRD Image class stores data as [cha z y x]
-
-    # Extract image data into a 5D array of size [img cha z y x]
-    data = np.stack([img.data                              for img in imgGroup])
     head = [img.getHead()                                  for img in imgGroup]
     meta = [ismrmrd.Meta.deserialize(img.attribute_string) for img in imgGroup]
     
-    # Reformat data to [y x z cha img], i.e. [row col] for the first two dimensions
-    data = data.transpose((3, 4, 2, 1, 0))
-    
-     # Display MetaAttributes for first image
+    # Display MetaAttributes for first image
     logging.debug("MetaAttributes[0]: %s", ismrmrd.Meta.serialize(meta[0]))
 
     # Optional serialization of ICE MiniHeader
     if 'IceMiniHead' in meta[0]:
         logging.debug("IceMiniHead[0]: %s", base64.b64decode(meta[0]['IceMiniHead']).decode('utf-8'))
-
-    logging.debug("Original image data is size %s" % (data.shape,))
-    np.save(debugFolder + "/imgOrig.npy", data)
 
     # Copy the MRD file to a new location for conversion
     mrd2nii_folder = debugFolder + "/mrd2nii_conversion"
@@ -331,15 +321,17 @@ def process_image(imgGroup, connection, config, mrdHeader):
                         '-o', fname_output_mask_nii],
                         check=True)
         output_mask_nii = nib.load(fname_output_mask_nii)
-        out = output_mask_nii.get_fdata()
+        output_mask = output_mask_nii.get_fdata()
 
     # Create the mask with the SC segmentation method
     elif mrdhelper.get_json_config_param(config_dict, 'method') == 'sct_deepseg':
         raise NotImplementedError(f"Method {mrdhelper.get_json_config_param(config_dict, 'method')} is not implemented yet")
+        # TODO: Implement SCT DeepSeg method
 
     # Create the mask with the brain segmentation method
     elif mrdhelper.get_json_config_param(config_dict, 'method') == 'bet':
         raise NotImplementedError(f"Method {mrdhelper.get_json_config_param(config_dict, 'method')} is not implemented yet")
+        # TODO: Implement BET method
 
     else :
         raise RuntimeError(f"Method {mrdhelper.get_json_config_param(config_dict, 'method')} is not available. Options are : \
@@ -347,15 +339,24 @@ def process_image(imgGroup, connection, config, mrdHeader):
 
     currentSeries = 0
 
-    # Re-slice back into 2D images
-    imagesOut = [None] * out.shape[-1]
-    for iImg in range(out.shape[-1]):
+    # Output mask is in shape [x y z ch]
+    # Note: The MRD Image class stores data as [ch z y x]
+    # Extract mask data into a 5D array of size [img=ch*z 1 1 y x]
+    nb_ch = output_mask.shape[-1]
+    nb_z = output_mask.shape[-2]
+
+    logging.debug("Output mask is size %s" % (output_mask.shape,))
+    out = np.stack([output_mask[:, :, i_z, i_ch] for i_ch in range(nb_ch) for i_z in range(nb_z)], axis=0) # shape [img x y]
+    out = out[:, np.newaxis, np.newaxis, :, :] # shape [img 1 1 x y]
+    # Rotate each mask by 90 degrees clock-wise in the xy plane
+    out = np.rot90(out, k=3, axes=(-1, -2)) # shape [img 1 1 y x]
+
+    # Create a list of MRD Image instances to return
+    nb_img = nb_ch * nb_z
+    imagesOut = [None] * nb_img
+    for iImg in range(nb_img):
         # Create new MRD instance for the mask
-        # Transpose from convenience shape of [y x z cha] to MRD Image shape of [cha z y x]
-        # from_array() should be called with 'transpose=False' to avoid warnings, and when called
-        # with this option, can take input as: [cha z y x], [z y x], or [y x]
-        imagesOut[iImg] = ismrmrd.Image.from_array(out[...,iImg].transpose((3, 2, 0, 1)), transpose=False)
-        # TODO: Verify if the transpose is needed
+        imagesOut[iImg] = ismrmrd.Image.from_array(out[iImg, ...], transpose=False)
 
         # Create a copy of the original fixed header and update the data_type
         # (we changed it to int16 from all other types)
