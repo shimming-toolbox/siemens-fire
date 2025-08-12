@@ -373,10 +373,16 @@ def process_image(imgGroup, connection, config, mrdHeader):
         # Create a copy of the original ISMRMRD Meta attributes and update
         tmpMeta = meta[iImg]
         tmpMeta['DataRole']                       = 'Image'
-        tmpMeta['ImageProcessingHistory']         = ['PYTHON', 'THRESHOLD'] #TODO : May need to be updated
+        tmpMeta['ImageProcessingHistory']         = ['PYTHON', 'MASK']
         tmpMeta['SequenceDescriptionAdditional']  = 'FIRE'
         tmpMeta['Keep_image_geometry']            = 1
-        # TODO : Add other attributes for other methods yet to be implemented if necessary
+
+        if mrdhelper.get_json_config_param(config_dict, 'method') == 'threshold':
+            tmpMeta['ImageProcessingHistory'].append('THRESHOLD')
+        if mrdhelper.get_json_config_param(config_dict, 'method') == 'sct_deepseg':
+            tmpMeta['ImageProcessingHistory'].append('SC SEGMENTATION')
+        if mrdhelper.get_json_config_param(config_dict, 'method') == 'bet':
+            tmpMeta['ImageProcessingHistory'].append('BRAIN SEGMENTATION')
 
         # Add image orientation directions to MetaAttributes if not already present
         if tmpMeta.get('ImageRowDir') is None:
