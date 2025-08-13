@@ -1,3 +1,6 @@
+# Adapted from Kelvin Chow's python-ismrmrd-server repository
+# Source: https://github.com/kspaceKelvin/python-ismrmrd-server
+
 import ismrmrd
 import os
 import logging
