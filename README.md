@@ -46,6 +46,7 @@ The process consists of three main steps:
 ```bash
 git clone https://github.com/shimming-toolbox/siemens-fire.git <path/to/repository>
 cd <path/to/repository>
+```
 Verify you're in the correct directory by checking for the required files:
 ```bash
 ls -la
@@ -70,7 +71,8 @@ chmod +x ./tar_to_chroot.sh
 
 <a name="step-3---export-the-chroot-image-to-your-usb-key"></a>
 ### 1.5 Step 3 - Export the chroot image to your USB key
-**3.1 Prepare and verify**
+**Step 3.1 - Prepare and verify**
+
 Connect your USB drive and identify its mount point:
 ```bash
 # On macOS
@@ -79,21 +81,26 @@ df -h | grep /Volumes/
 # On Linux
 df -h | grep /media/
 ```
-**3.2 Create compressed archive**
+**Step 3.2 - Create compressed archive**
+
 Compress the image to reduce transfer time and storage requirements:
 ```bash
 zip st_chroot.zip st_chroot.img
 ```
 > [!NOTE]
 > **Output file:** `st_chroot.zip` (approximately 2.6GB)
-**3.3 Transfer to your USB drive**
+
+**Step 3.3 - Transfer to your USB drive**
+
 Replace `/Volumes/YOUR_USB_NAME/` with your actual USB drive path:
 ```bash
 cp st_chroot.zip </Volumes/YOUR_USB_NAME/>
 ```
 > [!NOTE]
 > **Expected transfer time:** 2-10 minutes depending on USB drive speed (USB 3.0+ recommended)
-**3.4 Verify and cleanup**
+
+**Step 3.4 - Verify and cleanup**
+
 Verify the transfer completed successfully:
 ```bash
 ls -la </Volumes/YOUR_USB_NAME>/st_chroot.zip
@@ -129,7 +136,7 @@ After completing this process:
 
 <a name="python-modules"></a>
 ## 2. Python modules
-To perform shimming with _Shimmin Toolbox_ on the scanner, we use different python modules linked to each acquisition : 
+To perform shimming with _Shimmin Toolbox_ on the scanner, different python modules are linked to each acquisition : 
 
 1. Localizer : No python module
 2. MP-RAGE : Creation of the masked ROI with `st_masking.py`
@@ -146,12 +153,11 @@ Before an acquisition, to change de parameters of a python module, please update
 
 <a name="3-testing-a-python-module-locally"></a>
 ## 3. Testing a python module locally
-This guide describes how to build, launch, and interact with a Docker image for processing .h5 datasets (such as EPI 
-or spheres) on your local computer using a Siemens-fire server and client CLI.
+This guide describes how to build, launch, and interact with a Docker image for processing .h5 datasets on your computer using a Siemens-fire server and client CLI.
 
 1. Navigate to the _siemens-fire_ directory
 ```bash
-cd <path/to/the/siemens-fire/repo>
+cd <path/to/repository>
 ```
 
 2. Build the Docker image
