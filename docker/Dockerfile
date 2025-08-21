@@ -38,6 +38,15 @@ ENV PATH /root/shimming-toolbox/python/bin:$PATH
 # Install specific versions
 RUN pip install numpy==1.26.4 h5py==3.14.0
 
+# Install Nomad
+RUN mkdir -p /opt/code/nomad && \
+    git clone https://github.com/bbopt/nomad.git /opt/code/nomad && \
+    cd /opt/code/nomad && \
+    cmake -DTEST_OPENMP=OFF -DBUILD_INTERFACE_PYTHON=ON -S . -B build/release && \
+    cmake --build build/release && \
+    cmake --install build/release && \
+    pip install --user --force-reinstall interfaces/PyNomad/dist/*whl
+
 # Clone the mrd2nii repository and install it
 RUN mkdir -p /opt/code/mrd2nii && \
     git clone https://github.com/shimming-toolbox/mrd2nii.git /opt/code/mrd2nii && \
