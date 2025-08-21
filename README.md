@@ -57,8 +57,8 @@ You should see `Dockerfile` and the build scripts (`docker_to_chroot.sh`, `tar_t
 ### 1.4 Step 2 - Create the chroot image
 Make the build scripts executable and run the image creation process:
 ```bash
-chmod +x ./docker_to_chroot.sh
-chmod +x ./tar_to_chroot.sh
+chmod +x ./docker/docker_to_chroot.sh
+chmod +x ./docker/tar_to_chroot.sh
 ./docker_to_chroot.sh st_image st_chroot.img
 ```
 **What happens during this step:**

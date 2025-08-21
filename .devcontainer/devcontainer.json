@@ -1,0 +1,41 @@
+{
+	"name": "siemens-fire-devcon",
+
+	"build": {
+		"dockerfile": "../docker/Dockerfile",
+		"target":     "python-mrd-devcontainer",
+		"context":    "../",
+		"cacheFrom":  [
+			"docker.io/kspacekelvin/fire-python-devcon"
+		]
+	},
+
+	// To enable your local GPUs in container if they are on enabled by default
+	// "runArgs": [ "--gpus=all" ],
+
+	// Use appPort if connecting from an external computer
+	"appPort": [
+		//9002,
+		"9020:9020"
+	],
+
+	// Default setting for Windows changes files to CRLF, so match this to avoid all files
+	// being marked as changed.  Could be disabled for non-Windows hosts
+	"postCreateCommand": "git config --global core.autocrlf true && pip install ipykernel",
+
+	"customizations": {
+		"vscode": {
+			// Add the IDs of extensions you want installed when the container is created.
+			"extensions": [
+				"ms-python.debugpy",
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"ms-toolsai.jupyter"
+			],
+
+			"settings": { 
+				"terminal.integrated.defaultProfile.linux": "bash"
+			}
+		}
+	}
+}
