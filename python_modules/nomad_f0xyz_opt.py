@@ -1,30 +1,28 @@
 import copy
 import ctypes
-
-import ismrmrd
-import logging
-import traceback
-import numpy as np
-import PyNomad
 from dataclasses import dataclass
-from threading import Thread
-from multiprocessing import Process, Queue, JoinableQueue
 from functools import partial
-import os
-import signal
-import shutil
-from numpy.linalg import norm
-import nibabel as nib
+import ismrmrd
 from joblib import Parallel, delayed
 import json
-import time
-import constants
+import logging
+from multiprocessing import Process, Queue, JoinableQueue
+import nibabel as nib
+from nibabel.processing import resample_from_to as nib_resample_from_to
+import numpy as np
+import os
+import PyNomad
+from scipy.ndimage import binary_dilation, binary_erosion, generate_binary_structure, iterate_structure
+import signal
+import shutil
+from threading import Thread
+import traceback
 
 from mrd2nii.mrd2nii_main import mrd2nii_volume, mrd2nii_stack
-from .utils import load_mask, resample_from_to, resample_mask, parse_slices
 
 # Folder for debug output files
 debugFolder = os.path.abspath("/tmp/share/debug/nomad_files")
+dataFolder = os.path.abspath("/tmp/share/saved_data")
 fname_solution = os.path.join(debugFolder, "solution.txt")
 
 NB_CHANNELS = 4
@@ -55,7 +53,7 @@ class Currents:
 class MyFeedbackData(ctypes.Structure):
     _pack_ = 1                            # Align on 1 byte boundaries
     _fields_ = [
-        ('slice_nb', ctypes.c_int8),                #          1 byte
+        ('slice_nb', ctypes.c_int32),                #          
         ('currents',  ctypes.c_float * NB_CHANNELS) #          NB_CHANNELS bytes
     ]                                               #       =  NB_CHANNELS + 1 bytes total
 
@@ -75,14 +73,14 @@ class ReturnThread(Thread):
 
 
 def find_and_read_mask_within_data():
-    # For now, take the latest created mask in debugFolder
-    mask_files = [f for f in os.listdir(debugFolder) if "mask" in f and f.endswith('.nii.gz')]
+    # For now, take the latest created mask in dataFolder
+    mask_files = [f for f in os.listdir(dataFolder) if "mask" in f and f.endswith('.nii.gz')]
     if not mask_files:
-        raise RuntimeError(f"No mask files found. Is it in {debugFolder}?")
+        raise RuntimeError(f"No mask files found. Is it in {dataFolder}?")
 
-    latest_mask_file = max(mask_files, key=lambda f: os.path.getctime(os.path.join(debugFolder, f)))
+    latest_mask_file = max(mask_files, key=lambda f: os.path.getctime(os.path.join(dataFolder, f)))
     logging.info(f"Using latest mask file: {latest_mask_file}")
-    return nib.load(os.path.join(debugFolder, latest_mask_file))
+    return nib.load(os.path.join(dataFolder, latest_mask_file))
 
 
 def process_print_queue(print_queue):
@@ -131,7 +129,8 @@ def send_coefs_to_scanner(send_to_scanner_queue, print_queue, connection):
             print_queue.put(f"Number of currents sent to Teensy: {n_currents}")
             break
 
-def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, result_thread, print_queue, print_queue_thread, nb_slices, nb_repetitions, chronological_to_nifti_ordering, fatsat):
+def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, result_thread,
+         print_queue, print_queue_thread, nb_slices, nb_repetitions, chronological_to_nifti_ordering, fatsat, send_to_scanner_queue, f_queues):
     
     def process_results(currents, nb_slices, nb_repetitions, chronological_to_nifti_ordering):
 
@@ -179,7 +178,7 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
     logging.info("Stopping NomadOpt")
     if send_to_scanner_thread is not None:
         logging.info("Closing Scanner queue")
-        send_to_scanner_thread.put(None)
+        send_to_scanner_queue.put(None)
         logging.info("Stopping Scanner Process")
         send_to_scanner_thread.join()
     else:
@@ -210,7 +209,7 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
     logging.info(opt_currents)
 
 
-def process(self, connection, config, metadata):
+def process(connection, config, metadata):
     if os.path.exists(debugFolder):
         shutil.rmtree(debugFolder)
     os.makedirs(debugFolder)
@@ -238,17 +237,17 @@ def process(self, connection, config, metadata):
 
         # Extract ordering
         mrd_idx_to_order_idx = {}
-        self.order_idx_to_mrd_idx = {}
+        order_idx_to_mrd_idx = {}
         nb_slices = 0
 
         for param in metadata.userParameters.userParameterLong:
             if param.name.startswith("RelativeSliceNumber_"):
                 i_slice = int(param.name.split("_")[-1]) - 1
-                self.order_idx_to_mrd_idx[int(param.value)] = i_slice
+                order_idx_to_mrd_idx[int(param.value)] = i_slice
                 mrd_idx_to_order_idx[i_slice] = int(param.value)
                 nb_slices += 1
         logging.info(f"mrd_idx_to_order_idx: {mrd_idx_to_order_idx}")
-        logging.info(f"order_idx_to_mrd_idx: {self.order_idx_to_mrd_idx}")
+        logging.info(f"order_idx_to_mrd_idx: {order_idx_to_mrd_idx}")
 
     except:
         raise ValueError("Improperly formatted metadata: \n%s", metadata)
@@ -272,9 +271,6 @@ def process(self, connection, config, metadata):
 
     nii_orig_mask = find_and_read_mask_within_data()
     nii_mask = None
-    
-    # Track applied currents on Teensy (dict of queues with slice as key)
-    currents_applied = {}
     
     nomad_instance_stopped = [True for _ in range(nb_slices)]
     f_queues = []
@@ -325,7 +321,7 @@ def process(self, connection, config, metadata):
 
     # Start the thread that communicates with the scanner
     logging.info("Starting thread to send coefs to Scanner")
-    send_to_scanner_thread = Thread(target=send_coefs_to_scanner, args=(send_to_scanner_queue, print_queue))
+    send_to_scanner_thread = Thread(target=send_coefs_to_scanner, args=(send_to_scanner_queue, print_queue, connection))
     send_to_scanner_thread.start()
 
     x0 = [0 for _ in range(NB_CHANNELS)]
@@ -349,11 +345,11 @@ def process(self, connection, config, metadata):
             send_to_scanner_queue,
             print_queue,
             use_surrogate,
-            surr_queues[i] if self.surr_queues is not None else None,
+            surr_queues[i] if surr_queues is not None else None,
             nii_fmap,
             nii_coil_profiles,
             use_fmap_obj,
-            obj_fmap_queues[i] if self.obj_fmap_queues is not None else None))
+            obj_fmap_queues[i] if obj_fmap_queues is not None else None))
         worker.start()
         workers.append(worker)
 
@@ -416,7 +412,7 @@ def process(self, connection, config, metadata):
                             chronological_to_nifti_ordering = parse_slices(json_data)
 
                             # Mask
-                            nii_mask = load_mask(nii, self.nii_orig_mask, path_output=debugFolder)
+                            nii_mask = load_mask(nii, nii_orig_mask, path_output=debugFolder)
                             is_mask_converted = True
 
                             # We need to convert the mask in the same geometry as the fmap to use the surrogate
@@ -448,13 +444,13 @@ def process(self, connection, config, metadata):
                                         obj_fmap_queues[i].put(time_ordering)
 
                             for a_item in volume_images:
-                                ret_code, nomad_instance_stopped = process_image(a_item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, currents_applied, is_processing, f_queues, result_queue, nii_mask)
+                                ret_code, nomad_instance_stopped = process_image(a_item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask)
                                 if ret_code:
                                     img_processed += 1
                         continue
 
-                    ret_code, nomad_instance_stopped = process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, currents_applied, is_processing, f_queues, result_queue, nii_mask)
-                    logging.info()
+                    ret_code, nomad_instance_stopped = process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask)
+
                     if ret_code:
                         img_processed += 1
 
@@ -473,7 +469,7 @@ def process(self, connection, config, metadata):
 
     except Exception as e:
         logging.error(traceback.format_exc())
-        connection.send_logging(constants.MRD_LOGGING_ERROR, traceback.format_exc())
+        connection.send_logging("ERROR   ", traceback.format_exc())
 
     finally:
         connection.send_close()
@@ -488,21 +484,27 @@ def process(self, connection, config, metadata):
              nb_slices,
              nb_repetitions,
              chronological_to_nifti_ordering,
-             fatsat)
+             fatsat,
+             send_to_scanner_queue,
+             f_queues)
 
-def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, currents_applied, is_processing, f_queues, result_queue, nii_mask):
+def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask):
     # The slices are already in order of acquisition time
     slice_mrd = item.getHead().slice
+
     if nomad_instance_stopped[slice_mrd]:
         logging.info("Nomad instance %d is stopped, not processing image", slice_mrd)
         return 0, nomad_instance_stopped
 
-    while currents_applied[slice_mrd].empty():
-        if not is_processing:
-            logging.info("Not processing image since 'is_processing' is false")
-            return 0, nomad_instance_stopped
+    if not is_processing:
+        logging.info("Not processing image since 'is_processing' is false")
+        return 0, nomad_instance_stopped
 
-    if currents_applied[slice_mrd].get():
+    currents_applied = True if item.user_int[5] == 1 else False
+    logging.info(f"user_int: {item.user_int[:]}")
+    logging.info(f"user_float: {item.user_float[:]}")
+
+    if currents_applied:
         mask = nii_mask.get_fdata()[..., mrd_idx_to_order_idx[slice_mrd]]
 
         if np.sum(np.abs(mask)) == 0:
@@ -699,6 +701,209 @@ def surrogate(block, i_slice, surr_queue, nii_fmap, nii_coil_profiles, print_que
 
     print_queue.put(f"Surrogate: {eval_ok}")
     return eval_ok
+
+
+
+def load_mask(nii_input, nii_mask, path_output):
+    # Load the mask
+    if nii_mask is None:
+        raise ValueError("Input mask is None")
+    else:
+        # Masks must be 3d
+        if len(nii_mask.shape) != 3:
+            raise ValueError("Input mask must be 3d")
+        # If the mask is of a different shape, resample it.
+        elif not np.all(nii_mask.shape == nii_input.shape) or not np.all(nii_mask.affine == nii_input.affine):
+            nii_mask = resample_mask(nii_mask, nii_input)
+            nib.save(nii_mask, os.path.join(path_output, 'resampled_mask.nii.gz'))
+        else:
+            logging.info("No need to resample the mask")
+
+    return nii_mask
+
+
+def resample_mask(nii_mask_from, nii_target, from_slices=None, dilation_kernel='None', dilation_size=None):
+    """
+    Select the appropriate slices from ``nii_mask_from`` using ``from_slices`` and resample onto ``nii_target``
+
+    Args:
+        nii_mask_from (nib.Nifti1Image): Mask to resample from. False or 0 signifies not included.
+        nii_target (nib.Nifti1Image): Target image to resample onto.
+        from_slices (tuple): Tuple containing the slices to select from nii_mask_from. None selects all the slices.
+
+    Returns:
+        nib.Nifti1Image: Mask resampled with nii_target.shape and nii_target.affine.
+    """
+    mask_from = nii_mask_from.get_fdata()
+
+    if from_slices is None:
+        from_slices = tuple(range(mask_from.shape[2]))
+
+    # Initialize a sliced mask and select the slices from from_slices
+    sliced_mask = np.full_like(mask_from, fill_value=0)
+    sliced_mask[:, :, from_slices] = mask_from[:, :, from_slices]
+
+    # Create nibabel object of sliced mask
+    nii_mask = nib.Nifti1Image(sliced_mask.astype(float), nii_mask_from.affine, header=nii_mask_from.header)
+
+    # Resample the sliced mask onto nii_target
+    logging.info(nii_mask.shape)
+    logging.info(nii_target.shape)
+    nii_mask_target = nib_resample_from_to(nii_mask,
+                                           nii_target,
+                                           order=0,
+                                           mode='grid-constant',
+                                           cval=0,
+                                           out_class=nib.Nifti1Image)
+
+    if dilation_kernel in [None, 'None']:
+        return nii_mask_target
+
+    # Dilate the mask to add more pixels in particular directions
+    mask_dilated = modify_binary_mask(nii_mask_target.get_fdata(), dilation_kernel, dilation_size, 'dilate')
+
+    nii_full_mask_target = resample_from_to(nii_mask_from, nii_target, order=0, mode='grid-constant', cval=0)
+
+    # Make sure the mask is within the original ROI
+    mask_dilated_in_roi = np.logical_and(mask_dilated, nii_full_mask_target.get_fdata())
+    nii_mask_dilated = nib.Nifti1Image(mask_dilated_in_roi, nii_mask_target.affine, header=nii_mask_target.header)
+
+    return nii_mask_dilated
+
+
+def resample_from_to(nii_from_img, nii_to_vox_map, order=2, mode='nearest', cval=0., out_class=nib.Nifti1Image):
+    """ Wrapper to nibabel's ``resample_from_to`` function. Resample image `from_img` to mapped voxel space
+    `to_vox_map`. The wrapper adds support for 2D input data (adds a singleton) and for 4D time series.
+    For more info, refer to nibabel.processing.resample_from_to.
+
+    Args:
+        nii_from_img (nibabel.Nifti1Image): Nibabel object with 2D, 3D or 4D array. The 4d case will be treated as a
+                                            timeseries.
+        nii_to_vox_map (nibabel.Nifti1Image): Nibabel object with
+        order (int): Refer to nibabel.processing.resample_from_to
+        mode (str): Refer to nibabel.processing.resample_from_to
+        cval (scalar): Refer to nibabel.processing.resample_from_to
+        out_class: Refer to nibabel.processing.resample_from_to
+
+    Returns:
+        nibabel.Nifti1Image: Return a Nibabel object with the resampled data. The 4d case will have an extra dimension
+                             for the different time points.
+
+    """
+
+    from_img = nii_from_img.get_fdata()
+    if from_img.ndim == 2:
+        nii_from_img_3d = nib.Nifti1Image(np.expand_dims(from_img, -1), nii_from_img.affine, header=nii_from_img.header)
+        nii_resampled = nib_resample_from_to(nii_from_img_3d, nii_to_vox_map, order=order, mode=mode, cval=cval,
+                                             out_class=out_class)
+
+    elif from_img.ndim == 3:
+        nii_resampled = nib_resample_from_to(nii_from_img, nii_to_vox_map, order=order, mode=mode, cval=cval,
+                                             out_class=out_class)
+
+    elif from_img.ndim == 4:
+        nt = from_img.shape[3]
+        results = Parallel(-1, backend='loky')(
+            delayed(_resample_4d)(it, nii_from_img, nii_to_vox_map, order, mode, cval, out_class)
+            for it in range(nt))
+        resampled_4d = np.array([results[it] for it in range(nt)]).transpose(1, 2, 3, 0)
+        nii_resampled = nib.Nifti1Image(resampled_4d, nii_to_vox_map.affine, header=nii_to_vox_map.header)
+
+    else:
+        raise NotImplementedError("Dimensions of input can only be 2D, 3D or 4D")
+
+    return nii_resampled
+
+
+def _resample_4d(i, nii_from_img, nii_to_vox_map, order, mode, cval, out_class):
+    nii_from_img_3d = nib.Nifti1Image(nii_from_img.get_fdata()[..., i], nii_from_img.affine, header=nii_from_img.header)
+    resampled_image = nib_resample_from_to(nii_from_img_3d, nii_to_vox_map, order=order, mode=mode,
+                                           cval=cval, out_class=out_class).get_fdata()
+    return resampled_image
+
+
+def modify_binary_mask(mask, shape='sphere', size=3, operation='dilate'):
+    """
+    Dilates or erodes a binary mask according to different shapes and kernel size
+
+    Args:
+        mask (numpy.ndarray): 3d array containing the binary mask.
+        shape (str): 3d kernel to perform the dilation. Allowed shapes are: 'sphere', 'cross', 'line', 'cube', 'None'.
+                     'line' uses 3 line kernels to extend in each directions by "(size - 1) / 2" only if that direction
+                     is smaller than (size - 1) / 2
+        size (int): Length of a side of the 3d kernel. Must be odd.
+        operation (str): Operation to perform. Allowed operations are: 'dilate', 'erode'.
+
+    Returns:
+        numpy.ndarray: Dilated/eroded mask.
+    """
+    mask_operations = {'dilate': binary_dilation, 'erode': binary_erosion}
+
+    if size % 2 == 0 or size < 3:
+        raise ValueError("Size must be odd and greater or equal to 3")
+
+    if operation not in mask_operations:
+        raise ValueError(f"Operation <{operation}> not supported. Supported operations are: {list(mask_operations.keys())}")
+
+    # Find the middle pixel, will always work since we check size is odd
+    mid_pixel = int((size - 1) / 2)
+
+    if shape == 'sphere':
+        # Define kernel to perform the dilation
+        struct_sphere_size1 = generate_binary_structure(3, 1)
+        struct = iterate_structure(struct_sphere_size1, mid_pixel)
+
+        # Dilate
+        mask_dilated = mask_operations[operation](mask, structure=struct)
+
+    elif shape == 'None':
+        mask_dilated = mask
+
+    else:
+        raise ValueError("Use of non supported algorithm for dilating the mask")
+
+    return mask_dilated
+
+
+def parse_slices(json_data):
+    """
+    Parse the BIDS sidecar associated with the input nifti file.
+
+    Args:
+        fname_nifti (str): Full path to a NIfTI file
+    Returns:
+        list: 1D list containing tuples of dim3 slices to shim. (dim1, dim2, dim3)
+    """
+
+    # Make sure tag SliceTiming exists
+    if 'SliceTiming' in json_data:
+        slice_timing = json_data['SliceTiming']
+    else:
+        raise RuntimeError("No tag SliceTiming to automatically parse slice data")
+
+    # If SliceEncodingDirection exists and is negative, SliceTiming is reversed
+    if 'SliceEncodingDirection' in json_data:
+        if json_data['SliceEncodingDirection'][-1] == '-':
+            logging.debug("SliceEncodeDirection is negative, SliceTiming parsed backwards")
+            slice_timing.reverse()
+
+    # Return the indexes of the sorted slice_timing
+    slice_timing = np.array(slice_timing)
+    list_slices = np.argsort(slice_timing)
+    slices = []
+    # Construct the list of tuples
+    while len(list_slices) > 0:
+        # Find if the first index has the same timing as other indexes
+        # shim_group = tuple(list_slices[list_slices == list_slices[0]])
+        shim_group = tuple(np.where(slice_timing == slice_timing[list_slices[0]])[0].astype(np.int32).tolist())
+        # Add this as a tuple
+        slices.append(shim_group)
+
+        # Since the list_slices is sorted by slice_timing, the only similar values will be at the beginning
+        n_to_remove = len(shim_group)
+        list_slices = list_slices[n_to_remove:]
+
+    return slices
 
 
 class TerminationException(Exception):
