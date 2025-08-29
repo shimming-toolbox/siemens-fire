@@ -1,6 +1,7 @@
 # Adapted from Kelvin Chow's python-ismrmrd-server repository
 # Source: https://github.com/kspaceKelvin/python-ismrmrd-server
 
+from datetime import datetime
 import ismrmrd
 import os
 import logging
@@ -13,11 +14,14 @@ import mrdhelper # Custom module for MRD helper functions found in the python-is
 import constants # Custom module for constants found in the python-ismrmrd-server repository
 import subprocess
 import nibabel as nib
+import random
 import shutil
-import glob
+from mrd2nii.mrd2nii_main import mrd2nii_volume
+
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
+dataFolder = "/tmp/share/saved_data"
 
 def process(connection, config, mrdHeader):
     logging.info("Config: \n%s", config)
@@ -46,6 +50,7 @@ def process(connection, config, mrdHeader):
     currentSeries = 0
     imgGroup = []
     waveformGroup = []
+    dset = None
     try:
         for item in connection:
             # ----------------------------------------------------------
@@ -58,7 +63,9 @@ def process(connection, config, mrdHeader):
                 if item.image_series_index != currentSeries:
                     logging.info("Processing a group of images because series index changed to %d", item.image_series_index)
                     currentSeries = item.image_series_index
-                    image = process_image(imgGroup, connection, config, mrdHeader)
+                    if dset is None:
+                        dset = create_debug_save_file()
+                    image = process_image(imgGroup, connection, config, mrdHeader, dset)
                     connection.send_image(image)
                     imgGroup = []
                 # Only process magnitude images -- send phase images back without modification (fallback for images with unknown type)
@@ -96,8 +103,10 @@ def process(connection, config, mrdHeader):
         # This is also a fallback for handling image data, as the last
         # image in a series is typically not separately flagged.
         if len(imgGroup) > 0:
+            if dset is None:
+                dset = create_debug_save_file()
             logging.info("Processing a group of images (untriggered)")
-            image = process_image(imgGroup, connection, config, mrdHeader)
+            image = process_image(imgGroup, connection, config, mrdHeader, dset)
             connection.send_image(image)
             imgGroup = []
 
@@ -107,18 +116,14 @@ def process(connection, config, mrdHeader):
 
     finally:
         connection.send_close()
+        if dset is not None:
+            dset.close()
 
-def process_image(imgGroup, connection, config, mrdHeader):
+def process_image(imgGroup, connection, config, mrdHeader, dset):
     config_filename = f"{config}.json"
-    config_path = None
-    search_dir = "/opt/code/python-ismrmrd-server/"
-    for file in glob.glob(os.path.join(search_dir, "*.json")):
-        if os.path.basename(file) == config_filename:
-            config_path = file
-            break
-
-    if config_path is None:
-        raise FileNotFoundError(f"Could not find {config_filename} in {search_dir}.")
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_filename)
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"{config_path} does not exist.")
 
     with open(config_path, "r") as f:
         config_dict = json.load(f)
@@ -151,29 +156,19 @@ def process_image(imgGroup, connection, config, mrdHeader):
     mrd2nii_folder = debugFolder + "/mrd2nii_conversion"
     if not os.path.exists(mrd2nii_folder):
         os.makedirs(mrd2nii_folder)
-    fname_input_mrd = connection.mrdFilePath
-    fname_copied_mrd = os.path.join(mrd2nii_folder, "imgOrig.h5")
-    shutil.copy(fname_input_mrd, fname_copied_mrd)
 
     # Convert the MRD images to NIfTI format
-    subprocess.run(['mrd2nii', '-i', mrd2nii_folder, '-o', mrd2nii_folder], check=True)
-
-    # Rename the output NIfTI file
-    fname_input_nii = os.path.join(mrd2nii_folder, "imgOrig.nii.gz")
-    nii_files = [f for f in os.listdir(mrd2nii_folder) if f.endswith('.nii.gz')]
-    if not nii_files:
-        raise FileNotFoundError("No .nii.gz file found in {}".format(mrd2nii_folder))
-    first_nii = os.path.join(mrd2nii_folder, nii_files[0])
-    os.rename(first_nii, fname_input_nii)
-
-    fname_output_mask_nii = debugFolder + '/mask_threshold.nii.gz'
+    nii, sidecar = mrd2nii_volume(mrdHeader, imgGroup)
+    fname_input_nii = os.path.join(mrd2nii_folder, "img.nii.gz")
+    nib.save(nii, fname_input_nii)
 
     # Create the mask with the threshold method
     if mrdhelper.get_json_config_param(config_dict, 'method') == 'threshold':
-        fname_output_mask_nii = debugFolder + '/mask_threshold.nii.gz'
+        fname_output_mask_nii = os.path.join(debugFolder, 'mask_threshold.nii.gz')
         subprocess.run(['st_mask', 'threshold',
                         '-i', fname_input_nii,
-                        '--thr', mrdhelper.get_json_config_param(config_dict, 'value'),
+                        '--scaled-thr',
+                        '--thr', mrdhelper.get_json_config_param(config_dict, 'threshold_thr'),
                         '-o', fname_output_mask_nii],
                         check=True)
         output_mask_nii = nib.load(fname_output_mask_nii)
@@ -181,8 +176,32 @@ def process_image(imgGroup, connection, config, mrdHeader):
 
     # Create the mask with the SC segmentation method
     elif mrdhelper.get_json_config_param(config_dict, 'method') == 'sct_deepseg':
-        raise NotImplementedError(f"Method {mrdhelper.get_json_config_param(config_dict, 'method')} is not implemented yet")
-        # TODO: Implement SCT DeepSeg method
+        repetition = None
+        for hrd in head:
+            if repetition is None:
+                repetition = hrd.repetition
+            elif repetition != hrd.repetition:
+                raise RuntimeError("sct_deepseg method only supports input images with the same repetition number")
+
+        if head[0].repetition == 0:
+            fname_seg_mask_nii = os.path.join(debugFolder, 'mask_sct_deepseg_seg.nii.gz')
+            subprocess.run(['sct_deepseg', 'spinalcord',
+                            '-i', fname_input_nii,
+                            '-o', fname_seg_mask_nii],
+                            check=True)
+            fname_output_mask_nii = os.path.join(debugFolder, 'mask_sct_deepseg.nii.gz')
+            subprocess.run(['sct_create_mask',
+                            '-i', fname_input_nii,
+                            '-p', f'centerline,{fname_seg_mask_nii}',
+                            '-size', mrdhelper.get_json_config_param(config_dict, 'sct_deepseg_mask_size'),
+                            '-o', fname_output_mask_nii],
+                            check=True)
+            output_mask_nii = nib.load(fname_output_mask_nii)
+        else:
+            # Only process the first repetition
+            output_mask_nii = nib.load(fname_input_nii)
+        
+        output_mask = output_mask_nii.get_fdata()
 
     # Create the mask with the brain segmentation method
     elif mrdhelper.get_json_config_param(config_dict, 'method') == 'bet':
@@ -195,39 +214,45 @@ def process_image(imgGroup, connection, config, mrdHeader):
 
     currentSeries = 0
 
-    # Output mask is in shape [x y z ch]
-    # Note: The MRD Image class stores data as [ch z y x]
-    # Extract mask data into a 5D array of size [img=ch*z 1 1 y x]
-    nb_ch = output_mask.shape[-1]
-    nb_z = output_mask.shape[-2]
+    if len(output_mask.shape) == 3:
+        nb_z = output_mask.shape[-1]  
+    elif len(output_mask.shape) == 4:
+        raise NotImplementedError("4D output masks are not supported.")
+        nb_vols = output_mask.shape[-1]
+        nb_ch = None
+        nb_z = output_mask.shape[-2]
 
+    # Output mask is in shape [x y z]
+    # Note: The MRD Image class stores data as [ch z y x]
     logging.debug("Output mask is size %s" % (output_mask.shape,))
-    out = np.stack([output_mask[:, :, i_z, i_ch] for i_ch in range(nb_ch) for i_z in range(nb_z)], axis=0) # shape [img x y]
-    out = out[:, np.newaxis, np.newaxis, :, :] # shape [img 1 1 x y]
-    # Rotate each mask by 90 degrees clock-wise in the xy plane
-    out = np.rot90(out, k=3, axes=(-1, -2)) # shape [img 1 1 y x]
+
+    slice_order_nii_to_chrono = extract_nii_slice_ordering_to_chronological(sidecar, nb_z)
 
     # Create a list of MRD Image instances to return
-    nb_img = nb_ch * nb_z
-    imagesOut = [None] * nb_img
-    for iImg in range(nb_img):
+    imagesOut = [None] * nb_z
+    for nii_slice_index in range(nb_z):
+        mrd_slice_index = slice_order_nii_to_chrono[nii_slice_index]
+        # Rotate each mask by 90 degrees clock-wise in the xy plane
+        out = np.flip(np.rot90(output_mask[:, :, nii_slice_index], k=-1))[np.newaxis, np.newaxis, ...]
+        # out = output_mask[:, :, mrd_slice_index][np.newaxis, np.newaxis, ...]
+
         # Create new MRD instance for the mask
-        imagesOut[iImg] = ismrmrd.Image.from_array(out[iImg, ...], transpose=False)
+        imagesOut[mrd_slice_index] = ismrmrd.Image.from_array(out, transpose=False)
 
         # Create a copy of the original fixed header and update the data_type
         # (we changed it to int16 from all other types)
-        oldHeader = head[iImg]
-        oldHeader.data_type = imagesOut[iImg].data_type
+        oldHeader = head[mrd_slice_index]
+        oldHeader.data_type = imagesOut[mrd_slice_index].data_type
 
         # Increment series number when flag detected (i.e. follow ICE logic for splitting series)
-        if mrdhelper.get_meta_value(meta[iImg], 'IceMiniHead') is not None:
-            if mrdhelper.extract_minihead_bool_param(base64.b64decode(meta[iImg]['IceMiniHead']).decode('utf-8'), 'BIsSeriesEnd') is True:
+        if mrdhelper.get_meta_value(meta[mrd_slice_index], 'IceMiniHead') is not None:
+            if mrdhelper.extract_minihead_bool_param(base64.b64decode(meta[mrd_slice_index]['IceMiniHead']).decode('utf-8'), 'BIsSeriesEnd') is True:
                 currentSeries += 1
 
-        imagesOut[iImg].setHead(oldHeader)
+        imagesOut[mrd_slice_index].setHead(oldHeader)
 
         # Create a copy of the original ISMRMRD Meta attributes and update
-        tmpMeta = meta[iImg]
+        tmpMeta = meta[mrd_slice_index]
         tmpMeta['DataRole']                       = 'Image'
         tmpMeta['ImageProcessingHistory']         = ['PYTHON', 'MASK']
         tmpMeta['SequenceDescriptionAdditional']  = 'FIRE'
@@ -249,9 +274,18 @@ def process_image(imgGroup, connection, config, mrdHeader):
 
         metaXml = tmpMeta.serialize()
         logging.debug("Image MetaAttributes: %s", xml.dom.minidom.parseString(metaXml).toprettyxml())
-        logging.debug("Image data has %d elements", imagesOut[iImg].data.size)
+        logging.debug("Image data has %d elements", imagesOut[mrd_slice_index].data.size)
 
-        imagesOut[iImg].attribute_string = metaXml
+        imagesOut[mrd_slice_index].attribute_string = metaXml
+
+        # Copy to main data directory
+        shutil.copyfile(fname_output_mask_nii, os.path.join(dataFolder, "mask.nii.gz"))
+
+        # Debug output
+        dset.append_image("image_%d" % imagesOut[mrd_slice_index].image_series_index, imagesOut[mrd_slice_index])
+        if "xml" not in dset.list():
+            dset.write_xml_header(mrdHeader.toXML())
+        
 
     # Send a copy of original (unmodified) images back too
     if mrdhelper.get_json_config_param(config_dict, 'sendOriginal', default=False, type='bool') == True:
@@ -270,5 +304,30 @@ def process_image(imgGroup, connection, config, mrdHeader):
             tmpImg.attribute_string = tmpMeta.serialize()
 
             imagesOut.insert(0, tmpImg)
-
+    
     return imagesOut
+
+
+def extract_nii_slice_ordering_to_chronological(json_data, n_slices):
+    slice_order_nii_to_chrono = {}
+    slice_timing = json_data.get("SliceTiming")
+    if slice_timing is not None and n_slices == 1:
+        return {0: 0}
+    indexes_chr_to_nii = np.argsort(slice_timing)
+    indexes_nii_to_chr = np.argsort(indexes_chr_to_nii)
+    for i_slice in range(n_slices):
+        slice_order_nii_to_chrono[i_slice] = indexes_nii_to_chr[i_slice]
+    return slice_order_nii_to_chrono
+
+
+def create_debug_save_file():
+    # Create savedata folder, if necessary
+    if not os.path.exists(debugFolder):
+        os.makedirs(debugFolder)
+
+    mrdFilePath = os.path.join(debugFolder, "MRD_output_" + datetime.now().strftime("%Y-%m-%d-%H%M%S" + "_" + str(random.randint(0,100)) + ".h5"))
+
+    # Create HDF5 file to store incoming MRD data
+    logging.info("Incoming data will be saved to: '%s' in group '%s'", mrdFilePath, "dataset")
+    dset = ismrmrd.Dataset(mrdFilePath, "dataset")
+    return dset
