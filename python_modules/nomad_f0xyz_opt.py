@@ -17,15 +17,28 @@ import signal
 import shutil
 from threading import Thread
 import traceback
+import mrdhelper # Custom module for MRD helper functions found in the python-ismrmrd-server repository
 
 from mrd2nii.mrd2nii_main import mrd2nii_volume, mrd2nii_stack
+from shimmingtoolbox.coils.coil import ScannerCoil
+
 
 # Folder for debug output files
-debugFolder = os.path.abspath("/tmp/share/debug/nomad_files")
+debugFolder = None
 dataFolder = os.path.abspath("/tmp/share/saved_data")
-fname_solution = os.path.join(debugFolder, "solution.txt")
+fname_solution = None
 
-NB_CHANNELS = 4
+
+NB_CHANNELS_TO_SEND_TO_SEQ = 4
+f0_ub = 300
+f0_lb = -300
+gradx_ub = 0.2
+gradx_lb = -0.2
+grady_ub = 0.2
+grady_lb = -0.2
+gradz_ub = 0.2
+gradz_lb = -0.2
+sum_cstr = np.inf
 
 # Signal interrupt for bb_block
 is_sigint = False
@@ -39,7 +52,8 @@ time_ordering_to_nifti_slices = None
 is_obj_with_fmap_ready = None
 obj_mask = None
 obj_time_ordering_to_nifti_slices = None
-MAX_RMSE = 100
+list_max_rmse = []
+MAX_RMSE_SCALAR = 1.2
 
 
 @dataclass
@@ -54,8 +68,8 @@ class MyFeedbackData(ctypes.Structure):
     _pack_ = 1                            # Align on 1 byte boundaries
     _fields_ = [
         ('slice_nb', ctypes.c_int32),                #          
-        ('currents',  ctypes.c_float * NB_CHANNELS) #          NB_CHANNELS bytes
-    ]                                               #       =  NB_CHANNELS + 1 bytes total
+        ('currents',  ctypes.c_float * NB_CHANNELS_TO_SEND_TO_SEQ) #          NB_CHANNELS_TO_SEND_TO_SEQ bytes
+    ]                                               #       =  NB_CHANNELS_TO_SEND_TO_SEQ + 1 bytes total
 
 
 class ReturnThread(Thread):
@@ -81,6 +95,23 @@ def find_and_read_mask_within_data():
     latest_mask_file = max(mask_files, key=lambda f: os.path.getctime(os.path.join(dataFolder, f)))
     logging.info(f"Using latest mask file: {latest_mask_file}")
     return nib.load(os.path.join(dataFolder, latest_mask_file))
+
+
+def find_and_read_fmap_within_data():
+    # For now, take the latest created fieldmap in dataFolder
+    fieldmap_files = [f for f in os.listdir(dataFolder) if "fieldmap" in f and f.endswith('.nii.gz')]
+    if not fieldmap_files:
+        raise RuntimeError(f"No fieldmap files found. Is it in {dataFolder}?")
+
+    latest_fieldmap_file = max(fieldmap_files, key=lambda f: os.path.getctime(os.path.join(dataFolder, f)))
+    logging.info(f"Using latest fieldmap file: {latest_fieldmap_file}")
+    nii = nib.load(os.path.join(dataFolder, latest_fieldmap_file))
+
+    json_path = os.path.join(dataFolder, latest_fieldmap_file.replace('.nii.gz', '.json'))
+    with open(json_path, 'r') as f:
+        json_data = json.load(f)
+
+    return nii, json_data
 
 
 def process_print_queue(print_queue):
@@ -119,14 +150,19 @@ def send_coefs_to_scanner(send_to_scanner_queue, print_queue, connection):
         # None is sent if the thread is stopped
         if currents is not None:
             n_currents += 1
-            print_queue.put(f"Sending currents to Teensy: {currents.currents}, Slice: {currents.slice}")
+            print_queue.put(f"Sending currents to scanner: {currents.currents}, slice: {currents.slice}")
             feedback_data = MyFeedbackData()
             feedback_data.slice_nb = currents.slice
-            for i in range(NB_CHANNELS):
+            for i in range(NB_CHANNELS_TO_SEND_TO_SEQ):
                 feedback_data.currents[i] = currents.currents[i]
-            connection.send_feedback("MyFeedback", feedback_data)
+
+            try:
+                connection.send_feedback("nomad_current", feedback_data)
+            except BrokenPipeError as e:
+                print_queue.put(f"BrokenPipeError when sending currents to the scanner: {e}")
+
         else:
-            print_queue.put(f"Number of currents sent to Teensy: {n_currents}")
+            print_queue.put(f"Number of currents sent to the scanner: {n_currents}")
             break
 
 def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, result_thread,
@@ -135,11 +171,11 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
     def process_results(currents, nb_slices, nb_repetitions, chronological_to_nifti_ordering):
 
         logging.info("Processing results")
-        opt_currents = np.zeros((nb_slices, NB_CHANNELS))
+        opt_currents = np.zeros((nb_slices, NB_CHANNELS_TO_SEND_TO_SEQ))
         max_sig_int = np.zeros((nb_slices,))
         logging.info(f"Number of processed currents received in result_queue: {len(currents)}")
 
-        all_currents = np.zeros((nb_slices, nb_repetitions + 1, NB_CHANNELS + 1))
+        all_currents = np.zeros((nb_slices, nb_repetitions + 1, NB_CHANNELS_TO_SEND_TO_SEQ + 1))
 
         for current in currents:
             if current.f > max_sig_int[current.slice]:
@@ -148,7 +184,7 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
             all_currents[current.slice, current.repetition, :-1] = current.currents
             all_currents[current.slice, current.repetition, -1] = current.f
 
-        currents_per_volume = np.empty(shape=(nb_slices, nb_repetitions + 1, NB_CHANNELS + 1))
+        currents_per_volume = np.empty(shape=(nb_slices, nb_repetitions + 1, NB_CHANNELS_TO_SEND_TO_SEQ + 1))
         currents_per_volume[:] = np.nan
 
         for current in currents:
@@ -161,19 +197,6 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
         np.save(os.path.join(debugFolder, f"all_currents.npy"), all_currents)
         np.save(os.path.join(debugFolder, f"currents_per_volume.npy"), currents_per_volume)
         return opt_currents
-    
-    def write_text_file(data, nb_slices, fatsat):
-        logging.info("Writing currents to text file")
-        with open(fname_solution, 'w') as f:
-            for i_slice in range(nb_slices):
-                if fatsat:
-                    for i_channel in range(NB_CHANNELS):
-                        f.write(f"0.0, ")
-                    f.write("\n")
-                for i_channel in range(NB_CHANNELS):
-                    f.write(f"{data[i_slice, i_channel]}, ")
-                f.write("\n")
-        logging.info(f"Currents written to {fname_solution}")
     
     logging.info("Stopping NomadOpt")
     if send_to_scanner_thread is not None:
@@ -189,14 +212,61 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
         if not nomad_instance_stopped[i]:
             q.put(None)
 
-    # stop worker threads
+    extra_nones = 5
+    for i, q in enumerate(f_queues):
+        for _ in range(extra_nones):
+            q.put(None)
+
     logging.info("Stopping worker thread")
-    for worker in workers:
+    for i, worker in enumerate(workers):
+        logging.info(f"Stopped worker {i}")
         worker.join()
+
+    for i, q in enumerate(f_queues):
+        cnt = 0
+        while not q.empty():
+            logging.info(f"{q.get()=}")
+            cnt += 1
+        logging.info(f"Stopped queue {i} took {extra_nones - cnt} extra None(s)")
 
     result_queue.put(None)
     result_currents = result_thread.join()
     opt_currents = process_results(result_currents, nb_slices, nb_repetitions, chronological_to_nifti_ordering)
+
+    def write_text_file(data, nb_slices, fatsat):
+        logging.info("Writing currents to text file")
+
+        def parse_chrono_to_nifti_2_nifti_to_chrono(chrono_to_nifti):
+            def find_max_slice(chrono_to_nifti):
+                max_slice = -1
+                for shim_group in chrono_to_nifti:
+                    if max(shim_group) > max_slice:
+                        max_slice = max(shim_group)
+                return max_slice
+
+            n_slices = find_max_slice(chrono_to_nifti) + 1
+            nifti_to_chrono = []
+            for i in range(n_slices):
+                for i_sg, shim_group in enumerate(chrono_to_nifti):
+                    if i in shim_group:
+                        nifti_to_chrono.append(i_sg)
+                        break
+            return nifti_to_chrono
+        
+        # Output file is nifti ordered, not chronologically ordered so we need to convert
+        nifti_to_chrono = parse_chrono_to_nifti_2_nifti_to_chrono(chronological_to_nifti_ordering)
+
+        with open(fname_solution, 'w') as f:
+            for i_slice_nifti_idx in range(nb_slices):
+                a_slice_chrono_idx = nifti_to_chrono[i_slice_nifti_idx]
+                if fatsat:
+                    for i_channel in range(NB_CHANNELS_TO_SEND_TO_SEQ):
+                        f.write(f"0.0, ")
+                    f.write("\n")
+                for i_channel in range(NB_CHANNELS_TO_SEND_TO_SEQ):
+                    f.write(f"{data[a_slice_chrono_idx, i_channel]}, ")
+                f.write("\n")
+        logging.info(f"Currents written to {fname_solution}")
 
     # Write the currents to a text file
     write_text_file(opt_currents, nb_slices, fatsat)
@@ -210,13 +280,43 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
 
 
 def process(connection, config, metadata):
-    if os.path.exists(debugFolder):
-        shutil.rmtree(debugFolder)
-    os.makedirs(debugFolder)
+
     logging.info("Optimizing")
     is_processing = True
     
     logging.info(f"Config: {config}\n")
+    if isinstance(config, str):
+        config_filename = f"{config}.json"
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_filename)
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"{config_path} does not exist.")
+
+        with open(config_path, "r") as f:
+            config_dict = json.load(f)
+    elif isinstance(config, dict):
+        config_dict = config
+    else:
+        raise RuntimeError("Config should be a string or a dictionary")
+
+    use_surrogate = mrdhelper.get_json_config_param(config_dict, "use_surrogate", default=False, type="bool")
+    channels_to_shim = mrdhelper.get_json_config_param(config_dict, "channels_to_shim", default="fxyz")
+    objective = mrdhelper.get_json_config_param(config_dict, "objective", default="Sig int")
+    # Todo TEMP: Remove this
+    # objective = "Sig int + fmap"
+    # use_surrogate = True
+
+    global debugFolder, fname_solution
+    debugFolder = os.path.abspath(f"/tmp/share/debug/nomad_files_{channels_to_shim}")
+    if use_surrogate:
+        debugFolder += "_surrogate"
+    if objective == "Sig int + fmap":
+        debugFolder += "_si_fmap"
+    elif objective == "Sig int":
+        debugFolder += "_si"
+    if os.path.exists(debugFolder):
+        shutil.rmtree(debugFolder)
+    os.makedirs(debugFolder)
+    fname_solution = os.path.join(debugFolder, "scanner_shim.txt")
 
     # Metadata should be MRD formatted header, but may be a string
     try:
@@ -264,10 +364,8 @@ def process(connection, config, metadata):
     fatsat = False
 
     # Options
-    max_evals = 500
-    use_surrogate = False
-    objective = "Sig int"
-
+    max_evals = 2000
+    logging.info(f"Objective: {objective}, use_surrogate: {use_surrogate}, channels_to_shim: {channels_to_shim}")
 
     nii_orig_mask = find_and_read_mask_within_data()
     nii_mask = None
@@ -281,6 +379,7 @@ def process(connection, config, metadata):
     print_queue = JoinableQueue()
     print_queue_thread = None
     workers = []
+    chronological_to_nifti_ordering = None
 
     use_fmap_obj = True if objective == "Sig int + fmap" else False
     nii_fmap = None
@@ -289,13 +388,20 @@ def process(connection, config, metadata):
     nii_coil_profiles = None
 
     if use_surrogate or use_fmap_obj:
-        nii_fmap = nii_fmap
+        nii_fmap, json_data = find_and_read_fmap_within_data()
+        isocenter = get_isocenter(json_data)
+        st_scanner_constraints = {"name": "scanner",
+                                  "coef_sum_max": sum_cstr,
+                                  "coef_channel_minmax": {"0": [[f0_lb, f0_ub]],
+                                                          "1": [[gradx_lb, gradx_ub],
+                                                                [grady_lb, grady_ub],
+                                                                [gradz_lb, gradz_ub]]}}
+        scanner_coil = ScannerCoil(nii_fmap.shape[:3], nii_fmap.affine, constraints=st_scanner_constraints, orders=(0, 1),
+                                   manufacturer="Siemens", isocenter=isocenter)
+        nii_coil =nib.Nifti1Image(scanner_coil.profile, nii_fmap.affine, header=nii_fmap.header)
         nii_orig_coil_profiles = nii_coil
-        nii_coil_profiles = resample_from_to(nii_orig_coil_profiles,
-                                             nii_fmap,
-                                             order=1,
-                                             mode='grid-constant',
-                                             cval=0)
+        nii_coil_profiles = nii_orig_coil_profiles
+        # resample_from_to(nii_orig_coil_profiles, nii_fmap,  order=1, mode='grid-constant',  cval=0)
 
     if use_surrogate:
         logging.info("Using surrogate model")
@@ -324,12 +430,32 @@ def process(connection, config, metadata):
     send_to_scanner_thread = Thread(target=send_coefs_to_scanner, args=(send_to_scanner_queue, print_queue, connection))
     send_to_scanner_thread.start()
 
-    x0 = [0 for _ in range(NB_CHANNELS)]
-    # Prisma has 2300 uT/m, the input needs to be in mT/m
-    # lb = [-1000, -2.3, -2.3, -2.3]
-    lb = [-1000, -1, -1, -1]
-    ub = [1000, 1, 1, 1]
-    sum_cstr = np.inf
+    
+    channels_to_shim = mrdhelper.get_json_config_param(config_dict, "channels_to_shim", default="fxyz")
+    if len(channels_to_shim) == 0:
+        raise ValueError("channels_to_shim should not be empty")
+    if len(channels_to_shim) > 4:
+        raise ValueError("channels_to_shim should contain at most 4 characters")
+    if len(channels_to_shim.replace("f", "").replace("x", "").replace("y", "").replace("z", "")) != 0:
+        raise ValueError("channels_to_shim should only contain 'f', 'x', 'y' and 'z'")
+    nb_channels_to_optimize = len(channels_to_shim)
+
+    x0 = [0 for _ in range(nb_channels_to_optimize)]
+    # Prisma has bounds of 2300 uT/m, the input needs to be in mT/m (we don't use min max values available since it's too large)
+    lb = []
+    ub = []
+    if 'f' in channels_to_shim:
+        lb.append(f0_lb)
+        ub.append(f0_ub)
+    if 'x' in channels_to_shim:
+        lb.append(gradx_lb)
+        ub.append(gradx_ub)
+    if 'y' in channels_to_shim:
+        lb.append(grady_lb)
+        ub.append(grady_ub)
+    if 'z' in channels_to_shim:
+        lb.append(gradz_lb)
+        ub.append(gradz_ub)
 
     # start the optimizer threads
     for i in range(nb_slices):
@@ -337,7 +463,7 @@ def process(connection, config, metadata):
         nomad_instance_stopped[i] = False
         worker = Process(target=nomad_instance, args=(
             i, x0, lb, ub,
-            NB_CHANNELS,
+            nb_channels_to_optimize,
             max_evals,
             sum_cstr,
             f_queues[i],
@@ -349,7 +475,9 @@ def process(connection, config, metadata):
             nii_fmap,
             nii_coil_profiles,
             use_fmap_obj,
-            obj_fmap_queues[i] if obj_fmap_queues is not None else None))
+            obj_fmap_queues[i] if obj_fmap_queues is not None else None,
+            channels_to_shim)
+        )
         worker.start()
         workers.append(worker)
 
@@ -427,21 +555,32 @@ def process(connection, config, metadata):
                                 mask_per_slice = np.array([results_mask[it].get_fdata() for it in range(nb_slices)]).transpose(1, 2, 3, 0)
                                 nib.save(nii_coil_profiles, f"{debugFolder}/nii_coil_profiles.nii.gz")
                                 nib.save(nii_fmap, f"{debugFolder}/nii_fmap.nii.gz")
-                                nii_mask_sliced = nib.Nifti1Image(mask_per_slice, nii_fmap.affine,
-                                                                    header=nii_fmap.header)
+                                nii_mask_sliced = nib.Nifti1Image(mask_per_slice, nii_fmap.affine, header=nii_fmap.header)
                                 nib.save(nii_mask_sliced, f"{debugFolder}/nii_sliced_mask.nii.gz")
                                 time_ordering = parse_slices(json_data)
+                                
+                                for i_slice in range(nb_slices):
+                                    # list_max_rmse needs to be initialized. It's time ordered
+                                    nifti_slice = time_ordering[i_slice][0]
+                                    res = nii_fmap.get_fdata()[mask_per_slice[..., nifti_slice] > 0]
+                                    b0_rmse_coef = np.sqrt(np.mean(res ** 2))
+                                    if b0_rmse_coef == 0:
+                                        logging.warning("b0_rmse_coef is 0 for slice %d, setting it to 50", i_slice)
+                                        b0_rmse_coef = 50
+                                    list_max_rmse.append(MAX_RMSE_SCALAR * b0_rmse_coef)
 
                                 if use_surrogate:
                                     # Send the mask when we have it so that the surrogate opt can start processing
                                     for i in range(nb_slices):
                                         surr_queues[i].put(mask_per_slice)
                                         surr_queues[i].put(time_ordering)
+                                        surr_queues[i].put(list_max_rmse)
                                 if use_fmap_obj:
                                     # Send the mask to the objective function
                                     for i in range(nb_slices):
                                         obj_fmap_queues[i].put(mask_per_slice)
                                         obj_fmap_queues[i].put(time_ordering)
+                                        obj_fmap_queues[i].put(list_max_rmse)
 
                             for a_item in volume_images:
                                 ret_code, nomad_instance_stopped = process_image(a_item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask)
@@ -472,7 +611,6 @@ def process(connection, config, metadata):
         connection.send_logging("ERROR   ", traceback.format_exc())
 
     finally:
-        connection.send_close()
         logging.info(f"Img processed: {img_processed}")
         stop(send_to_scanner_thread,
              nomad_instance_stopped,
@@ -487,6 +625,7 @@ def process(connection, config, metadata):
              fatsat,
              send_to_scanner_queue,
              f_queues)
+        connection.send_close()
 
 def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask):
     # The slices are already in order of acquisition time
@@ -501,8 +640,9 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
         return 0, nomad_instance_stopped
 
     currents_applied = True if item.user_int[5] == 1 else False
-    logging.info(f"user_int: {item.user_int[:]}")
-    logging.info(f"user_float: {item.user_float[:]}")
+    # Todo: TEMP
+    # currents_applied = True
+    logging.info(f"B0 offset: {item.user_int[6] - (2 ** 16) if item.user_int[6] > 2 ** 15 else item.user_int[6]}")
 
     if currents_applied:
         mask = nii_mask.get_fdata()[..., mrd_idx_to_order_idx[slice_mrd]]
@@ -512,7 +652,7 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
             # If nothing to shim in that slice, stop the instance
             f_queues[slice_mrd].put(None)
             # "optimal" currents should be 0s
-            cur = Currents([0 for _ in range(NB_CHANNELS)], slice_mrd, -np.inf, item.getHead().repetition)
+            cur = Currents([0 for _ in range(NB_CHANNELS_TO_SEND_TO_SEQ)], slice_mrd, -np.inf, item.getHead().repetition)
             result_queue.put(cur)
             nomad_instance_stopped[slice_mrd] = True
             return 1, nomad_instance_stopped
@@ -533,18 +673,27 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
 
 
 def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queue, result_queue, send_to_scanner_queue,
-                   print_queue, use_surrogate, surr_queue, nii_fmap, nii_coil_profiles, use_fmap_obj, obj_fmap_queue):
+                   print_queue, use_surrogate, surr_queue, nii_fmap, nii_coil_profiles, use_fmap_obj, obj_fmap_queue, channels_to_shim):
     fname_cache = os.path.join(debugFolder, f"cache_slice{i_slice}.txt")
     fname_stats = os.path.join(debugFolder, f"stats_slice{i_slice}.txt")
+    granularity = "("
+    if "f" in channels_to_shim:
+        granularity += "1 "
+    if "x" in channels_to_shim:
+        granularity += "0.001 "
+    if "y" in channels_to_shim:
+        granularity += "0.001 "
+    if "z" in channels_to_shim:
+        granularity += "0.001 "
+    granularity = granularity[:-1] + ")"
     bb_params = [
         f"DIMENSION {nb_channels}",
-        # "BB_OUTPUT_TYPE OBJ EB"
         "BB_MAX_BLOCK_SIZE 3",
         "EVAL_OPPORTUNISTIC yes",
         f"MAX_EVAL {max_evals}",
         f"CACHE_FILE {fname_cache}",
         f"STATS_FILE {fname_stats}",
-        "GRANULARITY * 0.001",
+        f"GRANULARITY {granularity}",
         # "EVAL_USE_CACHE false"
         "LH_SEARCH 10 1"
     ]
@@ -559,7 +708,7 @@ def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queu
         # bb_params.append('VNS_MADS_SEARCH_WITH_SURROGATE true')
         bb_params.append('SURROGATE_MAX_BLOCK_SIZE 10')
         bb_params.append('EVAL_QUEUE_SORT SURROGATE')
-        PyNomad.optimize(partial(bb_block,
+        a = PyNomad.optimize(partial(bb_block,
                                  i_slice=i_slice,
                                  sum_cstr=sum_cstr,
                                  send_to_scanner_queue=send_to_scanner_queue,
@@ -569,17 +718,19 @@ def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queu
                                  nii_fmap=nii_fmap,
                                  nii_coil_profiles=nii_coil_profiles,
                                  use_fmap_obj=use_fmap_obj,
-                                 obj_fmap_queue=obj_fmap_queue),
+                                 obj_fmap_queue=obj_fmap_queue,
+                                 channels_to_shim=channels_to_shim),
                          x0, lb, ub, bb_params, partial(surrogate, i_slice=i_slice,
                                                         surr_queue=surr_queue,
                                                         nii_fmap=nii_fmap,
                                                         nii_coil_profiles=nii_coil_profiles,
                                                         print_queue=print_queue,
                                                         sum_cstr=sum_cstr,
-                                                        use_fmap_obj=use_fmap_obj))
+                                                        use_fmap_obj=use_fmap_obj,
+                                                        channels_to_shim=channels_to_shim))
     else:
 
-        PyNomad.optimize(partial(bb_block,
+        a = PyNomad.optimize(partial(bb_block,
                                  i_slice=i_slice,
                                  sum_cstr=sum_cstr,
                                  send_to_scanner_queue=send_to_scanner_queue,
@@ -589,14 +740,14 @@ def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queu
                                  nii_fmap=nii_fmap,
                                  nii_coil_profiles=nii_coil_profiles,
                                  use_fmap_obj=use_fmap_obj,
-                                 obj_fmap_queue=obj_fmap_queue),
+                                 obj_fmap_queue=obj_fmap_queue,
+                                 channels_to_shim=channels_to_shim),
                          x0, lb, ub, bb_params)
-    print_queue.put(f"Exited Nomad instance {i_slice}")
+    print_queue.put(f"Exited Nomad instance {i_slice}: {a}")
 
 
 def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, result_queue: Queue, print_queue, nii_fmap,
-             nii_coil_profiles, use_fmap_obj, obj_fmap_queue):
-
+             nii_coil_profiles, use_fmap_obj, obj_fmap_queue, channels_to_shim):
     nb_points = block.size()
     eval_ok = [False for _ in range(nb_points)]
     skips = [False for _ in range(nb_points)]
@@ -608,10 +759,11 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
 
     b0_rmse_list = []
     if use_fmap_obj:
-        global is_obj_with_fmap_ready, obj_mask, obj_time_ordering_to_nifti_slices
+        global is_obj_with_fmap_ready, obj_mask, obj_time_ordering_to_nifti_slices, list_max_rmse
         if not is_obj_with_fmap_ready:
             obj_mask = obj_fmap_queue.get()
             obj_time_ordering_to_nifti_slices = obj_fmap_queue.get()
+            list_max_rmse = obj_fmap_queue.get()
             is_obj_with_fmap_ready = True
         a_slice = obj_time_ordering_to_nifti_slices[i_slice][0]
         print_queue.put(f"Objective function using fmap {i_slice}")
@@ -620,17 +772,21 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
     for i in range(nb_points):
         x = block.get_x(i)
         coefs = [x.get_coord(i) for i in range(x.size())]
+        
+        coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
+        # Scale from mT/m to uT/m for the gradients
+        coefs_to_send_to_scanner_ut = mult_grads_by_1000(coefs_to_send_to_scanner_mt)
 
         # Skip if it does not respect constraints
         skips[i] = np.sum(np.abs(coefs)) > sum_cstr
         if use_fmap_obj:
-            res = nii_fmap.get_fdata()[obj_mask[..., a_slice] > 0] + nii_coil_profiles.get_fdata()[obj_mask[..., a_slice] > 0] @ coefs
+            res = nii_fmap.get_fdata()[obj_mask[..., a_slice] > 0] + nii_coil_profiles.get_fdata()[obj_mask[..., a_slice] > 0] @ coefs_to_send_to_scanner_ut
             b0_rmse_coef = np.sqrt(np.mean(res ** 2))
             b0_rmse_list.append(b0_rmse_coef)
-            skips[i] = skips[i] or (b0_rmse_coef > MAX_RMSE)  # Example threshold, adjust as needed
+            skips[i] = skips[i] or (b0_rmse_coef > list_max_rmse[i_slice])  # Example threshold, adjust as needed
         if skips[i]:
             continue
-        currents = Currents(coefs, i_slice)
+        currents = Currents(coefs_to_send_to_scanner_mt, i_slice)
         # print_queue.put(f"Sending currents to Scanner: {currents.currents}, Slice: {currents.slice}")
         send_to_scanner_queue.put(currents)
 
@@ -642,7 +798,8 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
             # skipped because it did not respect the constraints
             ans = str(1) + " " + str(cst)
             if use_fmap_obj:
-                ans += " " + str(b0_rmse_list[k] - MAX_RMSE)
+                ans += " " + str(b0_rmse_list[k] - list_max_rmse[i_slice])
+            print_queue.put(f"Skipping since constraints not respected for slice {i_slice} with coefs: {coefs}, {ans=}")
             x.setBBO(ans.encode("UTF-8"))
             eval_ok[k] = 1
             continue
@@ -659,24 +816,28 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
         repetition = a_tuple[1]
         ans = str(-f) + " " + str(cst)
         if use_fmap_obj:
-            ans += " " + str(b0_rmse_list[k] - MAX_RMSE)
+            ans += " " + str(b0_rmse_list[k] - list_max_rmse[i_slice])
         x.setBBO(ans.encode("UTF-8"))
-        # print_queue.put(f"result_queue.maxsize: {result_queue._maxsize}")
         if result_queue.full():
             print_queue.put(f"Queue is full from nomad instance:{i_slice}")
         print_queue.put(f"Adding to result_queue for slice:{i_slice}")
-        result_queue.put(Currents(coefs, i_slice, f, repetition))
+
+        # Add 0s for channels that are not optimized
+        coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
+
+        result_queue.put(Currents(coefs_to_send_to_scanner_mt, i_slice, f, repetition))
         eval_ok[k] = 1
 
     return eval_ok
 
 
-def surrogate(block, i_slice, surr_queue, nii_fmap, nii_coil_profiles, print_queue, sum_cstr, use_fmap_obj):
+def surrogate(block, i_slice, surr_queue, nii_fmap, nii_coil_profiles, print_queue, sum_cstr, use_fmap_obj, channels_to_shim):
 
-    global is_surrogate_ready, surr_mask, time_ordering_to_nifti_slices
+    global is_surrogate_ready, surr_mask, time_ordering_to_nifti_slices, list_max_rmse
     if not is_surrogate_ready:
         surr_mask = surr_queue.get()
         time_ordering_to_nifti_slices = surr_queue.get()
+        list_max_rmse = surr_queue.get()
         is_surrogate_ready = True
 
     a_slice = time_ordering_to_nifti_slices[i_slice][0]
@@ -686,22 +847,43 @@ def surrogate(block, i_slice, surr_queue, nii_fmap, nii_coil_profiles, print_que
     for i in range(nb_points):
         x = block.get_x(i)
         coefs = [x.get_coord(i) for i in range(x.size())]
-
+        coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
+        # Scale from mT/m to uT/m for the gradients
+        coefs_to_send_to_scanner_ut = mult_grads_by_1000(coefs_to_send_to_scanner_mt)
         # Constraints
         cst = np.sum(np.abs(coefs)) - sum_cstr
 
-        res = nii_fmap.get_fdata()[surr_mask[..., a_slice] > 0] + nii_coil_profiles.get_fdata()[surr_mask[..., a_slice] > 0] @ coefs
+        res = nii_fmap.get_fdata()[surr_mask[..., a_slice] > 0] + nii_coil_profiles.get_fdata()[surr_mask[..., a_slice] > 0] @ coefs_to_send_to_scanner_ut
         b0_rmse_coef = np.sqrt(np.mean(res ** 2))
         print_queue.put(f"Surrogate: Evaluating point {i} with coefs: {coefs}, Slice: {i_slice}, B0 RMSE: {b0_rmse_coef}")
         ans = str(b0_rmse_coef) + " " + str(cst)
         if use_fmap_obj:
-            ans += " " + str(b0_rmse_coef - MAX_RMSE)
+            ans += " " + str(b0_rmse_coef - list_max_rmse[i_slice])
         x.setBBO(ans.encode("UTF-8"))
         eval_ok[i] = True
 
     print_queue.put(f"Surrogate: {eval_ok}")
     return eval_ok
 
+
+def fill_non_opt_currents_with_0s(currents, channels_to_shim):
+    i = 0
+    coefs_to_send_to_scanner = []
+    channels_to_check = ['f', 'x', 'y', 'z']
+    for ch in channels_to_check:
+        if ch in channels_to_shim:
+            coefs_to_send_to_scanner.append(currents[i])
+            i += 1
+        else:
+            coefs_to_send_to_scanner.append(0.0)
+    return coefs_to_send_to_scanner
+
+
+def mult_grads_by_1000(a_list):
+    if len(a_list) != 4:
+        raise ValueError("Input list must have 4 elements")
+    # Scale gradients, not f0
+    return [a_list[0],] + [a_list[i] * 1000 for i in range(1, 4)]
 
 
 def load_mask(nii_input, nii_mask, path_output):
@@ -904,6 +1086,76 @@ def parse_slices(json_data):
         list_slices = list_slices[n_to_remove:]
 
     return slices
+
+
+def get_isocenter(json_data):
+    """ Get the isocenter location in RAS coordinates from the json file.
+
+    The patient position is used to infer the table position in the patient coordinate system.
+    When the table is at (0,0,0), the origin is at the isocenter. We can therefore infer
+    the isocenter as -table_position when the table_position is in RAS coordinates.
+
+    Args:
+        json_data (dict): Dictionary containing the BIDS sidecar information
+
+    Returns:
+        numpy.ndarray: Isocenter location in RAS coordinates
+    """
+    table_position = json_data.get('TablePosition')
+
+    patient_position = json_data.get('PatientPosition')
+
+    if table_position is None or patient_position is None:
+        raise ValueError("TablePosition or PatientPosition not found in json data")
+
+    table_position = np.array(table_position)
+
+    # Define coordinate transformations for each patient position
+    position_transforms = {
+        'HFS': [0, 1, 2],      # x=x, y=y, z=z
+        'HFP': [0, 1, 2],      # x=-x, y=-y, z=z
+        'FFS': [0, 1, 2],      # x=-x, y=y, z=-z
+        'FFP': [0, 1, 2],      # x=x, y=-y, z=-z
+        'LFP': [2, 1, 0],      # x=-z, y=-y, z=-x
+        'LFS': [2, 1, 0],      # x=-z, y=y, z=x
+        'RFP': [2, 1, 0],      # x=z, y=-y, z=x
+        'RFS': [2, 1, 0],      # x=z, y=y, z=-x
+        'HFDR': [1, 0, 2],     # x=-y, y=x, z=z
+        'HFDL': [1, 0, 2],     # x=y, y=-x, z=z
+        'FFDR': [1, 0, 2],     # x=-y, y=-x, z=-z
+        'FFDL': [1, 0, 2],     # x=y, y=x, z=-z
+        'AFDR': [1, 2, 0],     # x=-y, y=z, z=-x
+        'AFDL': [1, 2, 0],     # x=y, y=z, z=x
+        'PFDR': [1, 2, 0],     # x=-y, y=-z, z=x
+        'PFDL': [1, 2, 0],     # x=y, y=-z, z=-x
+    }
+
+    # Define sign patterns for each patient position
+    position_signs = {
+        'HFS': [1, 1, 1],      'HFP': [-1, -1, 1],
+        'FFS': [-1, 1, -1],    'FFP': [1, -1, -1],
+        'LFP': [-1, -1, -1],   'LFS': [-1, 1, 1],
+        'RFP': [1, -1, 1],     'RFS': [1, 1, -1],
+        'HFDR': [-1, 1, 1],    'HFDL': [1, -1, 1],
+        'FFDR': [-1, -1, -1],  'FFDL': [1, 1, -1],
+        'AFDR': [-1, 1, -1],   'AFDL': [1, 1, 1],
+        'PFDR': [-1, -1, 1],   'PFDL': [1, -1, -1],
+    }
+
+    if patient_position not in position_transforms:
+        raise ValueError(f"Patient position {patient_position} not implemented")
+
+    # Transform table position to RAS coordinates
+    indices = position_transforms[patient_position]
+    signs = position_signs[patient_position]
+
+    table_position_ras = np.zeros(3)
+    for i in range(3):
+        table_position_ras[i] = signs[i] * table_position[indices[i]]
+
+    # The isocenter is located at -table_position
+    return -table_position_ras
+
 
 
 class TerminationException(Exception):
