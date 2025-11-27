@@ -16,7 +16,7 @@ import subprocess
 import nibabel as nib
 import random
 import shutil
-from mrd2nii.mrd2nii_main import mrd2nii_volume
+from mrd2nii.mrd2nii_main import mrd2nii_volume, get_main_dir
 
 
 # Folder for debug output files
@@ -60,6 +60,9 @@ def process(connection, config, mrdHeader):
                 # When this criteria is met, run process_group() on the accumulated
                 # data, which returns images that are sent back to the client.
                 # e.g. when the series number changes:
+                if dset is None:
+                    dset = create_debug_save_file()
+
                 if item.image_series_index != currentSeries:
                     logging.info("Processing a group of images because series index changed to %d", item.image_series_index)
                     currentSeries = item.image_series_index
@@ -115,18 +118,26 @@ def process(connection, config, mrdHeader):
         connection.send_logging(constants.MRD_LOGGING_ERROR, traceback.format_exc())
 
     finally:
-        connection.send_close()
         if dset is not None:
             dset.close()
+        connection.send_close()
+                
 
 def process_image(imgGroup, connection, config, mrdHeader, dset):
-    config_filename = f"{config}.json"
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_filename)
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"{config_path} does not exist.")
+    # TEMP:
+    # config['parameters']['method'] = 'sct_deepseg'
+    if isinstance(config, str):
+        config_filename = f"{config}.json"
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_filename)
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"{config_path} does not exist.")
 
-    with open(config_path, "r") as f:
-        config_dict = json.load(f)
+        with open(config_path, "r") as f:
+            config_dict = json.load(f)
+    elif isinstance(config, dict):
+        config_dict = config
+    else:
+        raise RuntimeError("Config should be a string or a dictionary")
 
     if len(imgGroup) == 0:
         return []
@@ -160,6 +171,8 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
     # Convert the MRD images to NIfTI format
     nii, sidecar = mrd2nii_volume(mrdHeader, imgGroup)
     fname_input_nii = os.path.join(mrd2nii_folder, "img.nii.gz")
+    if nii.ndim == 4:
+        nii = nib.Nifti1Image(np.mean(nii.get_fdata(), axis=3), nii.affine, header=nii.header)
     nib.save(nii, fname_input_nii)
 
     # Create the mask with the threshold method
@@ -183,30 +196,62 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
             elif repetition != hrd.repetition:
                 raise RuntimeError("sct_deepseg method only supports input images with the same repetition number")
 
+        fname_output_mask_nii = os.path.join(debugFolder, 'mask_sct_deepseg.nii.gz')
         if head[0].repetition == 0:
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = "0"
+            env["SCT_USE_GPU"] = "1"
+            path_sct_binaries = '/opt/code/spinalcordtoolbox/bin'
             fname_seg_mask_nii = os.path.join(debugFolder, 'mask_sct_deepseg_seg.nii.gz')
-            subprocess.run(['sct_deepseg', 'spinalcord',
+            subprocess.run([os.path.join(path_sct_binaries, 'sct_deepseg'), 'spinalcord',
                             '-i', fname_input_nii,
                             '-o', fname_seg_mask_nii],
-                            check=True)
-            fname_output_mask_nii = os.path.join(debugFolder, 'mask_sct_deepseg.nii.gz')
-            subprocess.run(['sct_create_mask',
-                            '-i', fname_input_nii,
-                            '-p', f'centerline,{fname_seg_mask_nii}',
-                            '-size', mrdhelper.get_json_config_param(config_dict, 'sct_deepseg_mask_size'),
-                            '-o', fname_output_mask_nii],
-                            check=True)
+                           env=env,
+                           check=True)
+            # Optionally create a circular mask around the centerline
+            if mrdhelper.get_json_config_param(config_dict, 'sct_deepseg_create_circular_mask', default=True, type='bool'):
+                subprocess.run([os.path.join(path_sct_binaries, 'sct_create_mask'),
+                                '-i', fname_input_nii,
+                                '-p', f'centerline,{fname_seg_mask_nii}',
+                                '-size', mrdhelper.get_json_config_param(config_dict, 'sct_deepseg_mask_size'),
+                                '-o', fname_output_mask_nii],
+                                check=True)
+            else:
+                fname_output_mask_nii = fname_seg_mask_nii
+
             output_mask_nii = nib.load(fname_output_mask_nii)
         else:
             # Only process the first repetition
-            output_mask_nii = nib.load(fname_input_nii)
+            output_mask_nii = nib.load(fname_output_mask_nii)
         
         output_mask = output_mask_nii.get_fdata()
 
     # Create the mask with the brain segmentation method
     elif mrdhelper.get_json_config_param(config_dict, 'method') == 'bet':
-        raise NotImplementedError(f"Method {mrdhelper.get_json_config_param(config_dict, 'method')} is not implemented yet")
-        # TODO: Implement BET method
+        repetition = None
+        for hrd in head:
+            if repetition is None:
+                repetition = hrd.repetition
+            elif repetition != hrd.repetition:
+                raise RuntimeError("bet method only supports input images with the same repetition number")
+        
+        fname_output_mask_nii = os.path.join(debugFolder, 'mask_bet.nii.gz')
+        if head[0].repetition == 0:
+            subprocess.run(['/root/shimming-toolbox/python/bin/bet2',
+                            fname_input_nii,
+                            os.path.join(debugFolder, 'tmp'),
+                            '-f', mrdhelper.get_json_config_param(config_dict, 'bet_f', default='0.5'),
+                            '-g', mrdhelper.get_json_config_param(config_dict, 'bet_g', default='0'),
+                            '-m',
+                            '-n'],
+                            check=True)
+            os.rename(os.path.join(debugFolder, 'tmp_mask.nii.gz'), fname_output_mask_nii)
+            output_mask_nii = nib.load(fname_output_mask_nii)
+        else:
+            # Only process the first repetition
+            output_mask_nii = nib.load(fname_output_mask_nii)
+
+        output_mask = output_mask_nii.get_fdata()
 
     else :
         raise RuntimeError(f"Method {mrdhelper.get_json_config_param(config_dict, 'method')} is not available. Options are : \
@@ -214,27 +259,78 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
 
     currentSeries = 0
 
+    # Find slice encoding direction
+    dim_info = output_mask_nii.header.get_dim_info()
+
+    if None in dim_info:
+        if np.allclose(nii.affine, output_mask_nii.affine) and nii.shape == output_mask_nii.shape:
+            logging.warning("Input image and output mask have the same orientation and shape, assuming slice encoding direction is the same")
+            dim_info = nii.header.get_dim_info()
+
+    dim_of_freq_phase_slice_enc_directions = np.argsort(dim_info)
+
     if len(output_mask.shape) == 3:
-        nb_z = output_mask.shape[-1]  
+        nb_slices = output_mask.shape[dim_of_freq_phase_slice_enc_directions[2]]
     elif len(output_mask.shape) == 4:
         raise NotImplementedError("4D output masks are not supported.")
         nb_vols = output_mask.shape[-1]
         nb_ch = None
-        nb_z = output_mask.shape[-2]
+        nb_slices = output_mask.shape[-2]
 
     # Output mask is in shape [x y z]
     # Note: The MRD Image class stores data as [ch z y x]
     logging.debug("Output mask is size %s" % (output_mask.shape,))
 
-    slice_order_nii_to_chrono = extract_nii_slice_ordering_to_chronological(sidecar, nb_z)
+    if mrdHeader.encoding[0].encodedSpace.matrixSize.z != 1:
+        # 3d
+        slice_order_nii_to_chrono = {i: i for i in range(nb_slices)}
+    else:
+        slice_order_nii_to_chrono = extract_nii_slice_ordering_to_chronological(sidecar, nb_slices)
 
     # Create a list of MRD Image instances to return
-    imagesOut = [None] * nb_z
-    for nii_slice_index in range(nb_z):
+    imagesOut = [None] * nb_slices
+    for nii_slice_index in range(nb_slices):
         mrd_slice_index = slice_order_nii_to_chrono[nii_slice_index]
-        # Rotate each mask by 90 degrees clock-wise in the xy plane
-        out = np.flip(np.rot90(output_mask[:, :, nii_slice_index], k=-1))[np.newaxis, np.newaxis, ...]
-        # out = output_mask[:, :, mrd_slice_index][np.newaxis, np.newaxis, ...]
+        
+        # Select the slice
+        slice_dim_in_nifti_coords = dim_of_freq_phase_slice_enc_directions[2]
+        if slice_dim_in_nifti_coords == 0:
+            tmp = output_mask[nii_slice_index, :, :]
+        elif slice_dim_in_nifti_coords == 1:
+            tmp = output_mask[:, nii_slice_index, :]
+        elif slice_dim_in_nifti_coords ==2:
+            tmp = output_mask[:, :, nii_slice_index]
+        else:
+            raise NotImplementedError("Slice index is not 0, 1 or 2")
+        
+        # Rotate and flip axes for MRD format
+        if slice_dim_in_nifti_coords == 2:
+            out = np.flip(np.rot90(tmp, k=-1))[np.newaxis, np.newaxis, ...]
+        elif slice_dim_in_nifti_coords == 1:
+            out = np.flip(np.rot90(tmp, k=-1))[np.newaxis, np.newaxis, ...]
+        elif slice_dim_in_nifti_coords == 0:
+            out = np.flip(np.rot90(tmp, k=-1), axis=0)[np.newaxis, np.newaxis, ...]
+        else:
+            raise NotImplementedError("Slice index is not 0, 1 or 2")
+        
+        # Scale to int16 max
+        if out.max() > 1:
+            raise RuntimeError("Output mask has values greater than 1. Scaling to max int16 will result in an overflow.")
+        if out.min() < -1:
+            raise RuntimeError("Output mask has values less than 1. Scaling to max int16 will result in an overflow.")
+        out *= 32767 
+        out = out.astype(np.int16)
+        data = np.array(imgGroup[mrd_slice_index].data).astype(np.float64)
+
+        # Scale to int16
+        bits_stored = 12
+        if (mrdhelper.get_userParameterLong_value(mrdHeader, "BitsStored") is not None):
+            bits_stored = mrdhelper.get_userParameterLong_value(mrdHeader, "BitsStored")
+        max_val = (2 ** bits_stored) - 1
+        data *= max_val / data.max()
+        data = np.around(data)
+        data = data.astype(np.int16)
+        out[out == 0] = data[out == 0]
 
         # Create new MRD instance for the mask
         imagesOut[mrd_slice_index] = ismrmrd.Image.from_array(out, transpose=False)

@@ -1,9 +1,12 @@
 {
     "version": "1.0",
     "parameters": {
-        "method": "threshold",
+        "method": "sct_deepseg",
         "threshold_thr": "0.1",
-        "sct_deepseg_mask_size": "25",
-        "sendOriginal": "False"
+        "sct_deepseg_create_circular_mask": "True",
+        "sct_deepseg_mask_size": "20",
+        "sendOriginal": "False",
+        "bet_f": "0.5",
+        "bet_g": "0.0"
     }
 }
