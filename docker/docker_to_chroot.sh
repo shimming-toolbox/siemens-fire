@@ -2,19 +2,19 @@
 # Adapted from Kelvin Chow's python-ismrmrd-server repository
 # Source: https://github.com/kspaceKelvin/python-ismrmrd-server
 
-#This script creates chroot image (.img) from the Docker file.
+# This script creates chroot image (.img) from the Docker file.
 
-if [[ "$#" -ne 2 && "$#" -ne 3 ]]; then
+if [[ "$#" -ne 1 && "$#" -ne 2 ]]; then
     echo "Wrong number of arguments"
-    echo "Syntax: ./docker_to_chroot.sh <docker_image_name> <chroot_file_name> [buffer_mb]"
+    echo "Syntax: ./docker_to_chroot.sh <chroot_file_name> [buffer_mb]"
     exit 1
 fi
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 DOCKER_NAME=${1}
-CHROOT_FILE=${2}
+CHROOT_FILE=st_image
 EXPORT_FILE=docker-export.tar
-BUFFER_MB=${3:-50}
+BUFFER_MB=${2:-50}
 
 # Check if Docker is installed
 if ! command -v docker &> /dev/null; then
@@ -47,6 +47,8 @@ docker run -it --rm          \
            --privileged=true \
            -v $(pwd):/share  \
            ubuntu            \
-           /bin/bash -c "sed -i -e 's/\r//g' /share/docker_tar_to_chroot.sh && /share/docker_tar_to_chroot.sh /share/${EXPORT_FILE} /share/${CHROOT_FILE} ${BUFFER_MB}"
+           /bin/bash -c "sed -i -e 's/\r//g' /share/docker_tar_to_chroot.sh && /share/docker_tar_to_chroot.sh /share/${EXPORT_FILE} /share/${CHROOT_FILE}.img ${BUFFER_MB}"
 
 rm ${EXPORT_FILE}
+
+zip "${CHROOT_FILE}.zip" "${CHROOT_FILE}.img"
