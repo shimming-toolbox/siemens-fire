@@ -14,7 +14,7 @@ RUN apt-get update && \
 
 # Clone the shimming-toolbox repository and install it
 RUN mkdir -p /opt/code/shimming-toolbox && \
-    git clone --branch 1.2 --depth 1 https://github.com/shimming-toolbox/shimming-toolbox.git /opt/code/shimming-toolbox && \
+    git clone https://github.com/shimming-toolbox/shimming-toolbox.git /opt/code/shimming-toolbox && \
     cd /opt/code/shimming-toolbox && \
     make install PLUGIN=false
 
@@ -40,9 +40,10 @@ RUN mkdir -p /opt/code/python-ismrmrd-server && \
 
 # Clone the spinalcordtoolbox repository and install it
 RUN mkdir -p /opt/code/spinalcordtoolbox && \
-    git clone --branch 7.0 --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinalcordtoolbox && \
+    # git clone --branch 7.0 --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinalcordtoolbox && \
+    git clone --branch jn/pytorch-1.13.1 --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinalcordtoolbox && \
     cd /opt/code/spinalcordtoolbox && \
-    ./install_sct -i -y 
+    ./install_sct -iygc 
 
 # Add SCT to path
 ENV PATH=/opt/code/spinalcordtoolbox/bin:$PATH
@@ -70,10 +71,15 @@ RUN mkdir /opt/code/prelude && \
 FROM mrd_converter AS python-mrd-devcontainer
 
 # Add ST modules
-# COPY ./python_modules/st_masking.py    /opt/code/python-ismrmrd-server
-# COPY ./python_modules/st_masking.json  /opt/code/python-ismrmrd-server
-# COPY ./python_modules/nomad_f0xyz_opt.py  /opt/code/python-ismrmrd-server
-# COPY ./python_modules/utils.py  /opt/code/python-ismrmrd-server
+COPY ./python_modules/st_masking.py    /opt/code/python-ismrmrd-server
+COPY ./python_modules/st_masking.json  /opt/code/python-ismrmrd-server
+COPY ./python_modules/st_fieldmap.py  /opt/code/python-ismrmrd-server
+COPY ./python_modules/st_fieldmap.json  /opt/code/python-ismrmrd-server
+COPY ./python_modules/st_b0shim.py  /opt/code/python-ismrmrd-server
+COPY ./python_modules/st_b0shim.json  /opt/code/python-ismrmrd-server
+COPY ./python_modules/nomad_f0xyz_opt.py  /opt/code/python-ismrmrd-server
+COPY ./python_modules/nomad_f0xyz_opt.json  /opt/code/python-ismrmrd-server
+
 # Set the st_masking module as the default module
 # CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate shim-dev && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]
 CMD /bin/bash
