@@ -1,0 +1,9 @@
+{
+    "version": "1.0",
+    "parameters": {
+        "unwrapper": "prelude",
+        "gaussian-filter": "True",
+        "sigma": "1",
+        "use_mask": "True"
+    }
+}
