@@ -16,7 +16,7 @@ import subprocess
 import nibabel as nib
 import random
 import shutil
-from mrd2nii.mrd2nii_main import mrd2nii_volume, get_main_dir
+from mrd2nii.mrd2nii_main import mrd2nii_volume
 
 
 # Folder for debug output files
