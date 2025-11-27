@@ -47,83 +47,38 @@ The process consists of three main steps:
 git clone https://github.com/shimming-toolbox/siemens-fire.git <path/to/repository>
 cd <path/to/repository>
 ```
-Verify you're in the correct directory by checking for the required files:
-```bash
-ls -la
-```
-You should see `Dockerfile` and the build scripts (`docker_to_chroot.sh`, `tar_to_chroot.sh`).
 
 <a name="step-2---create-the-chroot-image"></a>
 ### 1.4 Step 2 - Create the chroot image
-Make the build scripts executable and run the image creation process:
+Make the build scripts executable and run the image creation process. On macOS:
 ```bash
-chmod +x ./docker/docker_to_chroot.sh
-chmod +x ./docker/tar_to_chroot.sh
-./docker_to_chroot.sh st_image st_chroot.img
+chmod +x docker/docker_to_chroot.sh
+chmod +x docker/docker_tar_to_chroot.sh
+./docker/docker_to_chroot.sh st_chroot
 ```
+
+On Windows: 
+```dos
+docker_to_chroot.bat st_chroot
+```
+
 **What happens during this step:**
 1. **Docker build**: Creates a Docker image containing Shimming Toolbox and its dependencies
 2. **Container export**: Exports the container's filesystem to a tarball
 3. **Image creation**: Converts the tarball to a Linux root filesystem (.img)
 > [!NOTE]
 > **Expected duration:** 14 minutes
-> **Output file:** `st_chroot.img` (approximately 8.8GB)
+> **Output files:** `st_chroot.img` and `st_chroot.zip`
 
 <a name="step-3---export-the-chroot-image-to-your-usb-key"></a>
 ### 1.5 Step 3 - Export the chroot image to your USB key
-**Step 3.1 - Prepare and verify**
 
-Connect your USB drive and identify its mount point:
-```bash
-# On macOS
-df -h | grep /Volumes/
+After successful verification, clean up local files:
 
-# On Linux
-df -h | grep /media/
-```
-**Step 3.2 - Create compressed archive**
-
-Compress the image to reduce transfer time and storage requirements:
-```bash
-zip st_chroot.zip st_chroot.img
-```
-> [!NOTE]
-> **Output file:** `st_chroot.zip` (approximately 2.6GB)
-
-**Step 3.3 - Transfer to your USB drive**
-
-Replace `/Volumes/YOUR_USB_NAME/` with your actual USB drive path:
-```bash
-cp st_chroot.zip </Volumes/YOUR_USB_NAME/>
-```
-> [!NOTE]
-> **Expected transfer time:** 2-10 minutes depending on USB drive speed (USB 3.0+ recommended)
-
-**Step 3.4 - Verify and cleanup**
-
-Verify the transfer completed successfully:
-```bash
-ls -la </Volumes/YOUR_USB_NAME>/st_chroot.zip
-```
-Compare file sizes to ensure integrity:
-```bash
-ls -l st_chroot.zip </Volumes/YOUR_USB_NAME>/st_chroot.zip
-```
-Only after successful verification, clean up local files:
 ```bash
 rm st_chroot.zip
 rm st_chroot.img
 ```
-> [!WARNING]
-> Don't delete the local files until you've verified the USB transfer completed successfully.
-
-<a name="file-size-reference"></a>
-### 1.6 File Size Reference
-| File | Approximate Size |
-|------|------------------|
-| st_chroot.img | 8-9 GB |
-| st_chroot.zip | 2-3 GB |
-| Required USB space | 8+ GB |
 
 <a name="next-steps"></a>
 ### 1.7 Next Steps
