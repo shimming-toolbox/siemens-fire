@@ -1,0 +1,12 @@
+{
+    "version": "1.0",
+    "parameters": {
+        "shim_method": "slicewise",
+        "scanner-coil-order": "0,1",
+        "optimizer-method": "pseudo_inverse",
+        "optimizer-criteria": "rmse",
+        "regularization-factor": "0.1",
+        "weighting-signal-loss": "10",
+        "mask-dilation-kernel-size": "5"
+    }
+}
