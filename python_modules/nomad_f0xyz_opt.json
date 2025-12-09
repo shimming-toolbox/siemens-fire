@@ -2,7 +2,8 @@
     "version": "1.0",
     "parameters": {
         "channels_to_shim": "fxyz",
-        "objective": "Sig int",
-        "use_surrogate": "False"
+        "objective": "Sig int + mi",
+        "use_surrogate": "False",
+        "use_f0_offset_from_gradients": "True"
     }
 }
