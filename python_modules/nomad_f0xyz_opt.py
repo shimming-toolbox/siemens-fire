@@ -12,12 +12,15 @@ from nibabel.processing import resample_from_to as nib_resample_from_to
 import numpy as np
 import os
 import PyNomad
-from scipy.ndimage import binary_dilation, binary_erosion, generate_binary_structure, iterate_structure
+from scipy.ndimage import binary_dilation, binary_erosion, generate_binary_structure, iterate_structure, center_of_mass
 import signal
 import shutil
 from threading import Thread
 import traceback
 import mrdhelper # Custom module for MRD helper functions found in the python-ismrmrd-server repository
+
+from skimage.metrics import structural_similarity as ssim
+from scipy.ndimage import center_of_mass
 
 from mrd2nii.mrd2nii_main import mrd2nii_volume, mrd2nii_stack
 from shimmingtoolbox.coils.coil import ScannerCoil
@@ -30,8 +33,8 @@ fname_solution = None
 
 
 NB_CHANNELS_TO_SEND_TO_SEQ = 4
-f0_ub = 300
-f0_lb = -300
+f0_ub = 100
+f0_lb = -100
 gradx_ub = 0.2
 gradx_lb = -0.2
 grady_ub = 0.2
@@ -48,12 +51,25 @@ is_surrogate_ready = False
 surr_mask = None  # 4d fmap coord (X, Y, Z, ishim)
 time_ordering_to_nifti_slices = None
 
+# Obj with sig int
+is_obj_with_sigint = False
+
+# Obj with mutual information
+is_obj_with_mi = False
+HYPERPARAM_MI = 60.0
+
 # obj with fmap
+is_obj_with_fmap = False
 is_obj_with_fmap_ready = None
 obj_mask = None
 obj_time_ordering_to_nifti_slices = None
 list_max_rmse = []
 MAX_RMSE_SCALAR = 1.2
+
+# Slice location global variables
+is_slice_loc_ready = False
+slice_loc = None
+target_iso = None
 
 
 @dataclass
@@ -84,6 +100,17 @@ class ReturnThread(Thread):
     def join(self):
         super().join()
         return self._return
+
+
+def find_and_read_anat_within_data():
+    # For now, take the latest created mask in dataFolder
+    anat_files = [f for f in os.listdir(dataFolder) if "anat" in f and f.endswith('.nii.gz')]
+    if not anat_files:
+        raise RuntimeError(f"No anat files found. Is it in {dataFolder}?")
+
+    latest_anat_file = max(anat_files, key=lambda f: os.path.getctime(os.path.join(dataFolder, f)))
+    logging.info(f"Using latest anat file: {latest_anat_file}")
+    return nib.load(os.path.join(dataFolder, latest_anat_file))
 
 
 def find_and_read_mask_within_data():
@@ -301,18 +328,41 @@ def process(connection, config, metadata):
     use_surrogate = mrdhelper.get_json_config_param(config_dict, "use_surrogate", default=False, type="bool")
     channels_to_shim = mrdhelper.get_json_config_param(config_dict, "channels_to_shim", default="fxyz")
     objective = mrdhelper.get_json_config_param(config_dict, "objective", default="Sig int")
+    use_f0_offset_from_gradients = mrdhelper.get_json_config_param(config_dict, "use_f0_offset_from_gradients", default=True, type="bool")
     # Todo TEMP: Remove this
-    # objective = "Sig int + fmap"
-    # use_surrogate = True
+    objective = "Sig int + mi + fmap"
+    use_surrogate = False
+    use_f0_offset_from_gradients = True
 
-    global debugFolder, fname_solution
+    global debugFolder, fname_solution, is_obj_with_sigint, is_obj_with_mi, is_obj_with_fmap
+    is_obj_with_sigint = False
+    is_obj_with_mi = False
+    is_obj_with_fmap = False
     debugFolder = os.path.abspath(f"/tmp/share/debug/nomad_files_{channels_to_shim}")
     if use_surrogate:
         debugFolder += "_surrogate"
-    if objective == "Sig int + fmap":
-        debugFolder += "_si_fmap"
-    elif objective == "Sig int":
+    
+    found_objective = False
+    if "SIG INT" in objective.upper():
         debugFolder += "_si"
+        found_objective = True
+        is_obj_with_sigint = True
+    if "MI" in objective.upper():
+        debugFolder += "_mi"
+        found_objective = True
+        is_obj_with_mi = True
+    if "FMAP" in objective.upper():
+        debugFolder += "_fmap"
+        found_objective = True
+        is_obj_with_fmap = True
+    
+    if not found_objective:
+        raise ValueError(f"Objective '{objective}' not recognized. Available objectives are: 'sig int', 'mi', 'fmap', or combinations of these separated by +")
+    if not is_obj_with_sigint and not is_obj_with_mi:
+        raise ValueError("At least one of 'sig int', 'mi' objective function should be selected")
+    
+    if use_f0_offset_from_gradients:
+        debugFolder += "_f0_offset"
     if os.path.exists(debugFolder):
         shutil.rmtree(debugFolder)
     os.makedirs(debugFolder)
@@ -359,6 +409,8 @@ def process(connection, config, metadata):
     is_surrogate_ready = False
     global is_obj_with_fmap_ready
     is_obj_with_fmap_ready = False
+    global is_slice_loc_ready
+    is_slice_loc_ready = False
 
     # Constants
     fatsat = False
@@ -381,13 +433,16 @@ def process(connection, config, metadata):
     workers = []
     chronological_to_nifti_ordering = None
 
-    use_fmap_obj = True if objective == "Sig int + fmap" else False
     nii_fmap = None
     nii_coil = None
     nii_orig_coil_profiles = None
     nii_coil_profiles = None
 
-    if use_surrogate or use_fmap_obj:
+    # MI variables
+    nii_anat_epi_space = None
+    square_mask_coords = None
+
+    if use_surrogate or is_obj_with_fmap:
         nii_fmap, json_data = find_and_read_fmap_within_data()
         isocenter = get_isocenter(json_data)
         st_scanner_constraints = {"name": "scanner",
@@ -409,11 +464,16 @@ def process(connection, config, metadata):
     else:
         surr_queues = None
 
-    if use_fmap_obj:
+    if is_obj_with_fmap:
         logging.info("Using fmap obj function")
         obj_fmap_queues = [Queue() for _ in range(nb_slices)]
     else:
         obj_fmap_queues = None
+    
+    if use_f0_offset_from_gradients:
+        slice_loc_queues = [Queue() for _ in range(nb_slices)]
+    else:
+        slice_loc_queues = None
 
     print_queue_thread = ReturnThread(target=process_print_queue, args=(print_queue,))
     print_queue_thread.start()
@@ -474,9 +534,11 @@ def process(connection, config, metadata):
             surr_queues[i] if surr_queues is not None else None,
             nii_fmap,
             nii_coil_profiles,
-            use_fmap_obj,
+            is_obj_with_fmap,
             obj_fmap_queues[i] if obj_fmap_queues is not None else None,
-            channels_to_shim)
+            channels_to_shim,
+            use_f0_offset_from_gradients,
+            slice_loc_queues[i] if slice_loc_queues is not None else None)
         )
         worker.start()
         workers.append(worker)
@@ -543,8 +605,23 @@ def process(connection, config, metadata):
                             nii_mask = load_mask(nii, nii_orig_mask, path_output=debugFolder)
                             is_mask_converted = True
 
+                            # Slice locations
+                            if use_f0_offset_from_gradients:
+                                slice_com_per_slice = []
+                                iso = get_isocenter(json_data)
+                                # Get slice locations
+                                for i_slice in range(nb_slices):
+                                    nifti_slice = chronological_to_nifti_ordering[i_slice][0]
+                                    slice_com_per_slice.append(get_slice_mask_center_of_mass(nii_mask, nifti_slice))
+                                    logging.debug(f"Slice center of mass for slice {i_slice} (nifti slice {nifti_slice}): {slice_com_per_slice[i_slice]}, isocenter: {iso}")
+                                    slice_loc_queues[i_slice].put(slice_com_per_slice[i_slice])
+                                    slice_loc_queues[i_slice].put(iso)
+                                
+                                np.save(os.path.join(debugFolder, "slice_com_per_slice.npy"), np.array(slice_com_per_slice))
+                                np.save(os.path.join(debugFolder, "iso.npy"), np.array(iso))
+
                             # We need to convert the mask in the same geometry as the fmap to use the surrogate
-                            if use_fmap_obj or use_surrogate:
+                            if is_obj_with_fmap or use_surrogate:
                                 # Mask needs to be resampled to the target
                                 slices = [(i,) for i in range(nb_slices)]
                                 results_mask = Parallel(-1, backend='loky')(
@@ -575,20 +652,32 @@ def process(connection, config, metadata):
                                         surr_queues[i].put(mask_per_slice)
                                         surr_queues[i].put(time_ordering)
                                         surr_queues[i].put(list_max_rmse)
-                                if use_fmap_obj:
+                                        if use_f0_offset_from_gradients:
+                                            surr_queues[i].put(slice_com_per_slice[i])
+                                            surr_queues[i].put(iso)
+                                if is_obj_with_fmap:
                                     # Send the mask to the objective function
                                     for i in range(nb_slices):
                                         obj_fmap_queues[i].put(mask_per_slice)
                                         obj_fmap_queues[i].put(time_ordering)
                                         obj_fmap_queues[i].put(list_max_rmse)
+                            
+                            if is_obj_with_mi:
+                                # Load anatomical image in EPI space
+                                nii_anat_epi_space = load_anat_in_epi_space(nii)
+
+                                # Pre-compute square mask coords
+                                square_mask_coords = extract_rect_mask_coords(nii_mask.get_fdata())
 
                             for a_item in volume_images:
-                                ret_code, nomad_instance_stopped = process_image(a_item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask)
+                                ret_code, nomad_instance_stopped = process_image(a_item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask,
+                                                                                 is_obj_with_sigint, is_obj_with_mi, nii_anat_epi_space, square_mask_coords)
                                 if ret_code:
                                     img_processed += 1
                         continue
 
-                    ret_code, nomad_instance_stopped = process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask)
+                    ret_code, nomad_instance_stopped = process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask,
+                                                                     is_obj_with_sigint, is_obj_with_mi, nii_anat_epi_space, square_mask_coords)
 
                     if ret_code:
                         img_processed += 1
@@ -627,9 +716,11 @@ def process(connection, config, metadata):
              f_queues)
         connection.send_close()
 
-def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask):
+def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask,
+                  is_obj_with_sigint, is_obj_with_mi, nii_anat_epi_space, square_mask_coords):
     # The slices are already in order of acquisition time
     slice_mrd = item.getHead().slice
+    slice_nii = mrd_idx_to_order_idx[slice_mrd]
 
     if nomad_instance_stopped[slice_mrd]:
         logging.info("Nomad instance %d is stopped, not processing image", slice_mrd)
@@ -641,11 +732,12 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
 
     currents_applied = True if item.user_int[5] == 1 else False
     # Todo: TEMP
-    # currents_applied = True
+    currents_applied = True
+
     logging.info(f"B0 offset: {item.user_int[6] - (2 ** 16) if item.user_int[6] > 2 ** 15 else item.user_int[6]}")
 
     if currents_applied:
-        mask = nii_mask.get_fdata()[..., mrd_idx_to_order_idx[slice_mrd]]
+        mask = nii_mask.get_fdata()[..., slice_nii]
 
         if np.sum(np.abs(mask)) == 0:
             logging.info(f"Mask is empty, not processing image for slice: {slice_mrd}")
@@ -660,11 +752,25 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
         # Use mrd2nii
         nii_tmp = mrd2nii_stack(metadata, item, include_slice_gap=True)
         if item.getHead().repetition == 20:
-            nib.save(nii_tmp, f"{debugFolder}/slice{mrd_idx_to_order_idx[slice_mrd]}_rep{item.getHead().repetition}.nii.gz")
+            nib.save(nii_tmp, f"{debugFolder}/slice{slice_nii}_rep{item.getHead().repetition}.nii.gz")
             nib.Nifti1Image(mask, nii_tmp.affine, header=nii_tmp.header)
-            nib.save(nib.Nifti1Image(mask, nii_tmp.affine, header=nii_tmp.header), f"{debugFolder}/mask_slice{mrd_idx_to_order_idx[slice_mrd]}.nii.gz")
-        avg_sig_int = np.average(nii_tmp.get_fdata(), weights=mask)
-        f_queues[slice_mrd].put((avg_sig_int, item.getHead().repetition))
+            nib.save(nib.Nifti1Image(mask, nii_tmp.affine, header=nii_tmp.header), f"{debugFolder}/mask_slice{slice_nii}.nii.gz")
+        
+        if is_obj_with_sigint and not is_obj_with_mi:
+            avg_sig_int = np.average(nii_tmp.get_fdata(), weights=mask)
+            f_queues[slice_mrd].put((avg_sig_int, item.getHead().repetition))
+            logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: avg sig int: {avg_sig_int}")
+        elif not is_obj_with_sigint and is_obj_with_mi:
+            mutual_info = get_mututal_information_obj(nii_tmp.get_fdata(), nii_anat_epi_space.get_fdata()[..., slice_nii], square_mask_coords[slice_nii])
+            f_queues[slice_mrd].put((HYPERPARAM_MI * mutual_info, item.getHead().repetition))
+            logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: mutual info: {HYPERPARAM_MI * mutual_info}")
+        elif is_obj_with_sigint and is_obj_with_mi:
+            avg_sig_int = np.average(nii_tmp.get_fdata(), weights=mask)
+            mutual_info = get_mututal_information_obj(nii_tmp.get_fdata(), nii_anat_epi_space.get_fdata()[..., slice_nii], square_mask_coords[slice_nii])
+            f_queues[slice_mrd].put((avg_sig_int + (HYPERPARAM_MI * mutual_info), item.getHead().repetition))
+            logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: avg sig int: {avg_sig_int}, mutual info: {HYPERPARAM_MI * mutual_info}, sig int + mutual info: {avg_sig_int + (HYPERPARAM_MI * mutual_info)}")
+        else:
+            raise RuntimeError("Unreachable. At least one of 'sig int' or 'mi' objective function should be selected")
     else:
         logging.info(f"Image received for slice: {slice_mrd}, but no currents were applied")
         return 0, nomad_instance_stopped
@@ -673,7 +779,8 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
 
 
 def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queue, result_queue, send_to_scanner_queue,
-                   print_queue, use_surrogate, surr_queue, nii_fmap, nii_coil_profiles, use_fmap_obj, obj_fmap_queue, channels_to_shim):
+                   print_queue, use_surrogate, surr_queue, nii_fmap, nii_coil_profiles, use_fmap_obj, obj_fmap_queue, channels_to_shim, use_f0_offset_from_gradients,
+                   slice_loc_queue):
     fname_cache = os.path.join(debugFolder, f"cache_slice{i_slice}.txt")
     fname_stats = os.path.join(debugFolder, f"stats_slice{i_slice}.txt")
     granularity = "("
@@ -719,7 +826,9 @@ def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queu
                                  nii_coil_profiles=nii_coil_profiles,
                                  use_fmap_obj=use_fmap_obj,
                                  obj_fmap_queue=obj_fmap_queue,
-                                 channels_to_shim=channels_to_shim),
+                                 channels_to_shim=channels_to_shim,
+                                 use_f0_offset_from_gradients=use_f0_offset_from_gradients,
+                                 slice_loc_queue=slice_loc_queue),
                          x0, lb, ub, bb_params, partial(surrogate, i_slice=i_slice,
                                                         surr_queue=surr_queue,
                                                         nii_fmap=nii_fmap,
@@ -727,7 +836,8 @@ def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queu
                                                         print_queue=print_queue,
                                                         sum_cstr=sum_cstr,
                                                         use_fmap_obj=use_fmap_obj,
-                                                        channels_to_shim=channels_to_shim))
+                                                        channels_to_shim=channels_to_shim,
+                                                        use_f0_offset_from_gradients=use_f0_offset_from_gradients))
     else:
 
         a = PyNomad.optimize(partial(bb_block,
@@ -741,13 +851,15 @@ def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queu
                                  nii_coil_profiles=nii_coil_profiles,
                                  use_fmap_obj=use_fmap_obj,
                                  obj_fmap_queue=obj_fmap_queue,
-                                 channels_to_shim=channels_to_shim),
+                                 channels_to_shim=channels_to_shim,
+                                 use_f0_offset_from_gradients=use_f0_offset_from_gradients,
+                                 slice_loc_queue=slice_loc_queue),
                          x0, lb, ub, bb_params)
     print_queue.put(f"Exited Nomad instance {i_slice}: {a}")
 
 
 def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, result_queue: Queue, print_queue, nii_fmap,
-             nii_coil_profiles, use_fmap_obj, obj_fmap_queue, channels_to_shim):
+             nii_coil_profiles, use_fmap_obj, obj_fmap_queue, channels_to_shim, use_f0_offset_from_gradients, slice_loc_queue):
     nb_points = block.size()
     eval_ok = [False for _ in range(nb_points)]
     skips = [False for _ in range(nb_points)]
@@ -768,12 +880,23 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
         a_slice = obj_time_ordering_to_nifti_slices[i_slice][0]
         print_queue.put(f"Objective function using fmap {i_slice}")
 
+    if use_f0_offset_from_gradients:
+        global is_slice_loc_ready, slice_loc, target_iso
+        if not is_slice_loc_ready:
+            slice_loc = slice_loc_queue.get()
+            target_iso = slice_loc_queue.get()
+            is_slice_loc_ready = True
+
+
     # Send the points to the scanner
     for i in range(nb_points):
         x = block.get_x(i)
         coefs = [x.get_coord(i) for i in range(x.size())]
         
         coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
+        if use_f0_offset_from_gradients:
+            f0_offset = calculate_f0_from_gradients(coefs_to_send_to_scanner_mt[1:], target_iso, slice_loc)
+            coefs_to_send_to_scanner_mt = [-f0_offset + coefs_to_send_to_scanner_mt[0]] + coefs_to_send_to_scanner_mt[1:]
         # Scale from mT/m to uT/m for the gradients
         coefs_to_send_to_scanner_ut = mult_grads_by_1000(coefs_to_send_to_scanner_mt)
 
@@ -831,13 +954,16 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
     return eval_ok
 
 
-def surrogate(block, i_slice, surr_queue, nii_fmap, nii_coil_profiles, print_queue, sum_cstr, use_fmap_obj, channels_to_shim):
+def surrogate(block, i_slice, surr_queue, nii_fmap, nii_coil_profiles, print_queue, sum_cstr, use_fmap_obj, channels_to_shim, use_f0_offset_from_gradients):
 
-    global is_surrogate_ready, surr_mask, time_ordering_to_nifti_slices, list_max_rmse
+    global is_surrogate_ready, surr_mask, time_ordering_to_nifti_slices, list_max_rmse, slice_loc, target_iso
     if not is_surrogate_ready:
         surr_mask = surr_queue.get()
         time_ordering_to_nifti_slices = surr_queue.get()
         list_max_rmse = surr_queue.get()
+        if use_f0_offset_from_gradients:
+            slice_loc = surr_queue.get()
+            target_iso = surr_queue.get()
         is_surrogate_ready = True
 
     a_slice = time_ordering_to_nifti_slices[i_slice][0]
@@ -848,6 +974,9 @@ def surrogate(block, i_slice, surr_queue, nii_fmap, nii_coil_profiles, print_que
         x = block.get_x(i)
         coefs = [x.get_coord(i) for i in range(x.size())]
         coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
+        if use_f0_offset_from_gradients:
+            f0_offset = calculate_f0_from_gradients(coefs_to_send_to_scanner_mt[1:], target_iso, slice_loc)
+            coefs_to_send_to_scanner_mt = [-f0_offset + coefs_to_send_to_scanner_mt[0]] + coefs_to_send_to_scanner_mt[1:]
         # Scale from mT/m to uT/m for the gradients
         coefs_to_send_to_scanner_ut = mult_grads_by_1000(coefs_to_send_to_scanner_mt)
         # Constraints
@@ -902,6 +1031,22 @@ def load_mask(nii_input, nii_mask, path_output):
             logging.info("No need to resample the mask")
 
     return nii_mask
+
+
+def load_anat_in_epi_space(nii_epi):
+    nii_anat = find_and_read_anat_within_data()
+    if nii_anat is None:
+        raise ValueError("Anatomical image not found in data folder")
+    
+    if nii_anat.ndim != 3:
+        raise ValueError("Anatomical image must be 3D")
+    elif not np.all(nii_anat.shape == nii_epi.shape) or not np.all(nii_anat.affine == nii_epi.affine):
+        nii_anat_resampled = resample_from_to(nii_anat, nii_epi, order=2, mode='grid-constant', cval=0)
+    else:
+        logging.info("No need to resample the anatomical image")
+        nii_anat_resampled = nii_anat
+
+    return nii_anat_resampled
 
 
 def resample_mask(nii_mask_from, nii_target, from_slices=None, dilation_kernel='None', dilation_size=None):
@@ -1155,6 +1300,111 @@ def get_isocenter(json_data):
 
     # The isocenter is located at -table_position
     return -table_position_ras
+
+
+def calculate_f0_from_gradients(grads, iso, location) -> float:
+    """ Calculate the f0 offset induced by the gradients at the isocenter location.
+
+    Args:
+        grads (list): List of gradient strengths in mT/m [Gx, Gy, Gz]
+        iso (list): Isocenter location in RAS coordinates [x, y, z] in mm
+        location (list): Location where to calculate the f0 offset in RAS coordinates [x, y, z] in mm
+
+    Returns:
+        float: f0 offset in Hz
+    """
+    gamma = 42.577478518e6  # Hz/T
+    f0_offset = 0
+
+    # Convert mT/m to T/m and multiply by position difference in m
+    x_offset = grads[0] * 1e-3 * ((location[0] - iso[0]) * 1e-3)
+    y_offset = grads[1] * 1e-3 * ((location[1] - iso[1]) * 1e-3)
+    z_offset = grads[2] * 1e-3 * ((location[2] - iso[2]) * 1e-3)
+
+    # F0 offset depends on shim coordinate system, this is on Siemens, which is LAI:
+    # x gradient increases field when going to the Left (negative x in RAS)
+    # y gradient increases field when going to the Anterior (positive y in RAS)
+    # z gradient increases field when going to the Inferior (negative z in RAS)
+    f0_offset = -x_offset + y_offset - z_offset
+    f0_offset_hz = f0_offset * gamma
+
+    return f0_offset_hz
+
+
+def get_slice_mask_center_of_mass(nii_mask, slice_number) -> list:
+    """ Get the slice location in RAS coordinates from the nifti image and slice index.
+
+    Args:
+        nii_mask (nib.Nifti1Image): Nifti image
+        slice_number (int): Slice index along the 3rd dimension
+    Returns:
+        list: Slice location in RAS coordinates [x, y, z] in meters
+    """
+    # Get the affine matrix
+    affine = nii_mask.affine
+    com = center_of_mass(nii_mask.get_fdata()[..., slice_number])
+    voxel_coords = np.array([com[0], com[1], slice_number, 1])
+    # Convert to RAS coordinates
+    ras_coords = affine @ voxel_coords
+    return ras_coords[:3].tolist()
+
+
+def get_mututal_information_obj(epi_rect_mask, anat_epi_space_rect_mask, coords):
+    xmin, xmax, ymin, ymax = coords
+    epi_rect_mask = epi_rect_mask[xmin:xmax, ymin:ymax]
+    anat_epi_space_rect_mask = anat_epi_space_rect_mask[xmin:xmax, ymin:ymax]
+    mi = ssim(epi_rect_mask, anat_epi_space_rect_mask, data_range=anat_epi_space_rect_mask.max() - anat_epi_space_rect_mask.min(),
+               gaussian_weights=True,
+               sigma=0.5)
+    return mi
+
+
+def extract_rect_mask_coords(data_mask):
+    """
+    Create a square mask based on the center of mass of data_mask for each slice
+    and extract a 2D array from nii_anat_epi_space. The square size is inferred
+    from the bounding box of the oval in nii_anat_epi_space.
+
+    Args:
+        data_mask (np.ndarray): 3D mask array (X, Y, Z).
+
+    Returns:
+        list: Extracted 2D arrays for each slice.
+    """
+    nz = data_mask.shape[2]
+    extracted_coords = []
+
+    for slice_idx in range(nz):
+        # Compute the center of mass for the current slice
+        com = center_of_mass(data_mask[:, :, slice_idx])
+        if np.isnan(com[0]) or np.isnan(com[1]):  # Skip if the slice is empty
+            raise ValueError(f"Slice {slice_idx} in data_mask is empty.")
+
+        center_x, center_y = round(com[0]), round(com[1])
+
+        # Infer square size from the bounding box of the oval
+        non_zero_coords = np.argwhere(data_mask[:, :, slice_idx] > 0)  # Find non-zero (oval) coordinates
+        if non_zero_coords.size == 0:  # Skip if no oval is found
+            raise ValueError(f"No non-zero region found in slice {slice_idx} of data_mask.")
+
+        x_min_oval, y_min_oval = non_zero_coords.min(axis=0)
+        x_max_oval, y_max_oval = non_zero_coords.max(axis=0)
+        rect_width = x_max_oval - x_min_oval
+        rect_height = y_max_oval - y_min_oval
+
+        half_width = rect_width // 2 + 5
+        half_height = rect_height // 2 + 5
+
+        # Define the rectangular region
+        x_min = max(center_x - half_width, 0)
+        x_max = min(center_x + half_width, data_mask.shape[0])
+        y_min = max(center_y - half_height, 0)
+        y_max = min(center_y + half_height, data_mask.shape[1])
+
+        # append the coordinates
+        extracted_coords.append((x_min, x_max, y_min, y_max))
+
+    return extracted_coords
 
 
 
