@@ -124,8 +124,14 @@ def process(connection, config, mrdHeader):
                 
 
 def process_image(imgGroup, connection, config, mrdHeader, dset):
-    # TEMP:
-    # config['parameters']['method'] = 'sct_deepseg'
+    # todo: TEMP:
+    #config['parameters']['method'] = 'sct_deepseg'
+    #config['parameters']['sct_deepseg_create_circular_mask'] = 'True'
+    #config['parameters']['sct_deepseg_mask_size'] = '20'
+    config['parameters']['method'] = 'sct_propseg'
+    config['parameters']['sct_propseg_contrast'] = 't2s'
+    config['parameters']['sct_propseg_include_csf'] = 'True'
+
     if isinstance(config, str):
         config_filename = f"{config}.json"
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_filename)
@@ -170,13 +176,15 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
 
     # Convert the MRD images to NIfTI format
     nii, sidecar = mrd2nii_volume(mrdHeader, imgGroup)
-    fname_input_nii = os.path.join(mrd2nii_folder, "img.nii.gz")
+    fname_input_nii = os.path.join(dataFolder, "anat.nii.gz")
     if nii.ndim == 4:
         nii = nib.Nifti1Image(np.mean(nii.get_fdata(), axis=3), nii.affine, header=nii.header)
     nib.save(nii, fname_input_nii)
 
+    method = mrdhelper.get_json_config_param(config_dict, 'method')
+    logging.info(f"Creating mask using method: {method}")
     # Create the mask with the threshold method
-    if mrdhelper.get_json_config_param(config_dict, 'method') == 'threshold':
+    if method == 'threshold':
         fname_output_mask_nii = os.path.join(debugFolder, 'mask_threshold.nii.gz')
         subprocess.run(['st_mask', 'threshold',
                         '-i', fname_input_nii,
@@ -188,13 +196,13 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
         output_mask = output_mask_nii.get_fdata()
 
     # Create the mask with the SC segmentation method
-    elif mrdhelper.get_json_config_param(config_dict, 'method') == 'sct_deepseg':
+    elif method == 'sct_deepseg':
         repetition = None
         for hrd in head:
             if repetition is None:
                 repetition = hrd.repetition
             elif repetition != hrd.repetition:
-                raise RuntimeError("sct_deepseg method only supports input images with the same repetition number")
+                raise RuntimeError(f"{method} method only supports input images with the same repetition number")
 
         fname_output_mask_nii = os.path.join(debugFolder, 'mask_sct_deepseg.nii.gz')
         if head[0].repetition == 0:
@@ -226,8 +234,53 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
         
         output_mask = output_mask_nii.get_fdata()
 
+    elif method == 'sct_propseg':
+        repetition = None
+        for hrd in head:
+            if repetition is None:
+                repetition = hrd.repetition
+            elif repetition != hrd.repetition:
+                raise RuntimeError(f"{method} method only supports input images with the same repetition number")
+
+        fname_output_mask_nii = os.path.join(debugFolder, 'mask_sct_propseg.nii.gz')
+        if head[0].repetition == 0:
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = "0"
+            env["SCT_USE_GPU"] = "1"
+            path_sct_binaries = '/opt/code/spinalcordtoolbox/bin'
+            fname_seg_mask_nii = os.path.join(debugFolder, 'mask_sct_propseg_seg.nii.gz')
+            cmd = [os.path.join(path_sct_binaries, 'sct_propseg'),
+                            '-c', mrdhelper.get_json_config_param(config_dict, 'sct_propseg_contrast'),
+                            '-i', fname_input_nii,
+                            '-o', fname_seg_mask_nii]
+            include_csf = mrdhelper.get_json_config_param(config_dict, 'sct_propseg_include_csf', default=False, type='bool')
+            if include_csf:
+                cmd.append('-CSF')
+                basename = os.path.basename(fname_input_nii)
+                fname_seg_csf_nii = os.path.join(debugFolder, f'{basename.replace(".nii.gz", "_CSF_seg.nii.gz")}')
+            subprocess.run(cmd,
+                           env=env,
+                           check=True)
+            
+            # Optionally create a circular mask around the centerline
+            if include_csf:
+                subprocess.run(['sct_maths',
+                                '-i', fname_seg_mask_nii,
+                                '-add', fname_seg_csf_nii,
+                                '-o', fname_output_mask_nii],
+                                check=True)
+            else:
+                fname_output_mask_nii = fname_seg_mask_nii
+
+            output_mask_nii = nib.load(fname_output_mask_nii)
+        else:
+            # Only process the first repetition
+            output_mask_nii = nib.load(fname_output_mask_nii)
+        
+        output_mask = output_mask_nii.get_fdata()
+
     # Create the mask with the brain segmentation method
-    elif mrdhelper.get_json_config_param(config_dict, 'method') == 'bet':
+    elif method == 'bet':
         repetition = None
         for hrd in head:
             if repetition is None:
@@ -254,8 +307,8 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
         output_mask = output_mask_nii.get_fdata()
 
     else :
-        raise RuntimeError(f"Method {mrdhelper.get_json_config_param(config_dict, 'method')} is not available. Options are : \
-                           'threshold', 'sct_deepseg' and 'bet'.")
+        raise RuntimeError(f"Method {method} is not available. Options are : \
+                           'threshold', 'sct_deepseg' 'sct_propseg'and 'bet'.")
 
     currentSeries = 0
 
@@ -263,7 +316,7 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
     dim_info = output_mask_nii.header.get_dim_info()
 
     if None in dim_info:
-        if np.allclose(nii.affine, output_mask_nii.affine) and nii.shape == output_mask_nii.shape:
+        if np.allclose(nii.affine, output_mask_nii.affine, rtol=1e-5, atol=1e-5) and nii.shape == output_mask_nii.shape:
             logging.warning("Input image and output mask have the same orientation and shape, assuming slice encoding direction is the same")
             dim_info = nii.header.get_dim_info()
 

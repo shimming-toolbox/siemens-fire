@@ -1,10 +1,12 @@
 {
     "version": "1.0",
     "parameters": {
-        "method": "sct_deepseg",
+        "method": "sct_prop",
         "threshold_thr": "0.1",
         "sct_deepseg_create_circular_mask": "True",
         "sct_deepseg_mask_size": "20",
+        "sct_propseg_contrast": "t2s",
+        "sct_propseg_include_csf": "True",
         "sendOriginal": "False",
         "bet_f": "0.5",
         "bet_g": "0.0"
