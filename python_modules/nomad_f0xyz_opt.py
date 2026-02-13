@@ -20,6 +20,7 @@ import traceback
 import mrdhelper # Custom module for MRD helper functions found in the python-ismrmrd-server repository
 
 from skimage.metrics import structural_similarity as ssim
+from skimage.metrics import normalized_mutual_information as nmi
 from scipy.ndimage import center_of_mass
 
 from mrd2nii.mrd2nii_main import mrd2nii_volume, mrd2nii_stack
@@ -56,7 +57,15 @@ is_obj_with_sigint = False
 
 # Obj with mutual information
 is_obj_with_mi = False
-HYPERPARAM_MI = 60.0
+# mi_metric = 'ssim'
+mi_metric = 'nmi'
+if mi_metric == 'nmi':
+    HYPERPARAM_MI = 40.0
+elif mi_metric == 'ssim':
+    HYPERPARAM_MI = 80.0
+else:
+    raise ValueError(f"mi_metric {mi_metric} not recognized")
+
 
 # obj with fmap
 is_obj_with_fmap = False
@@ -297,6 +306,7 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
 
     # Write the currents to a text file
     write_text_file(opt_currents, nb_slices, fatsat)
+    shutil.copyfile(fname_solution, os.path.join(dataFolder, "scanner_shim.txt"))
     logging.info("Processing print queue")
     print_queue.put(None)
     messages = print_queue_thread.join()
@@ -330,7 +340,8 @@ def process(connection, config, metadata):
     objective = mrdhelper.get_json_config_param(config_dict, "objective", default="Sig int")
     use_f0_offset_from_gradients = mrdhelper.get_json_config_param(config_dict, "use_f0_offset_from_gradients", default=True, type="bool")
     # Todo TEMP: Remove this
-    objective = "Sig int + mi + fmap"
+    objective = "Sig int + mi"
+    channels_to_shim = 'z'
     use_surrogate = False
     use_f0_offset_from_gradients = True
 
@@ -351,6 +362,7 @@ def process(connection, config, metadata):
         debugFolder += "_mi"
         found_objective = True
         is_obj_with_mi = True
+        logging.info("Using MI objective function with metric: %s", mi_metric)
     if "FMAP" in objective.upper():
         debugFolder += "_fmap"
         found_objective = True
@@ -490,8 +502,7 @@ def process(connection, config, metadata):
     send_to_scanner_thread = Thread(target=send_coefs_to_scanner, args=(send_to_scanner_queue, print_queue, connection))
     send_to_scanner_thread.start()
 
-    
-    channels_to_shim = mrdhelper.get_json_config_param(config_dict, "channels_to_shim", default="fxyz")
+    # Parse channels_to_shim
     if len(channels_to_shim) == 0:
         raise ValueError("channels_to_shim should not be empty")
     if len(channels_to_shim) > 4:
@@ -732,7 +743,7 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
 
     currents_applied = True if item.user_int[5] == 1 else False
     # Todo: TEMP
-    currents_applied = True
+    #currents_applied = True
 
     logging.info(f"B0 offset: {item.user_int[6] - (2 ** 16) if item.user_int[6] > 2 ** 15 else item.user_int[6]}")
 
@@ -761,12 +772,12 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
             f_queues[slice_mrd].put((avg_sig_int, item.getHead().repetition))
             logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: avg sig int: {avg_sig_int}")
         elif not is_obj_with_sigint and is_obj_with_mi:
-            mutual_info = get_mututal_information_obj(nii_tmp.get_fdata(), nii_anat_epi_space.get_fdata()[..., slice_nii], square_mask_coords[slice_nii])
+            mutual_info = get_mututal_information_obj(nii_tmp.get_fdata(), nii_anat_epi_space.get_fdata()[..., slice_nii], square_mask_coords[slice_nii], metric=mi_metric)
             f_queues[slice_mrd].put((HYPERPARAM_MI * mutual_info, item.getHead().repetition))
             logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: mutual info: {HYPERPARAM_MI * mutual_info}")
         elif is_obj_with_sigint and is_obj_with_mi:
             avg_sig_int = np.average(nii_tmp.get_fdata(), weights=mask)
-            mutual_info = get_mututal_information_obj(nii_tmp.get_fdata(), nii_anat_epi_space.get_fdata()[..., slice_nii], square_mask_coords[slice_nii])
+            mutual_info = get_mututal_information_obj(nii_tmp.get_fdata(), nii_anat_epi_space.get_fdata()[..., slice_nii], square_mask_coords[slice_nii], metric=mi_metric)
             f_queues[slice_mrd].put((avg_sig_int + (HYPERPARAM_MI * mutual_info), item.getHead().repetition))
             logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: avg sig int: {avg_sig_int}, mutual info: {HYPERPARAM_MI * mutual_info}, sig int + mutual info: {avg_sig_int + (HYPERPARAM_MI * mutual_info)}")
         else:
@@ -896,7 +907,7 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
         coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
         if use_f0_offset_from_gradients:
             f0_offset = calculate_f0_from_gradients(coefs_to_send_to_scanner_mt[1:], target_iso, slice_loc)
-            coefs_to_send_to_scanner_mt = [-f0_offset + coefs_to_send_to_scanner_mt[0]] + coefs_to_send_to_scanner_mt[1:]
+            coefs_to_send_to_scanner_mt = [round(-f0_offset + coefs_to_send_to_scanner_mt[0])] + coefs_to_send_to_scanner_mt[1:]
         # Scale from mT/m to uT/m for the gradients
         coefs_to_send_to_scanner_ut = mult_grads_by_1000(coefs_to_send_to_scanner_mt)
 
@@ -947,6 +958,9 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
 
         # Add 0s for channels that are not optimized
         coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
+        if use_f0_offset_from_gradients:
+            f0_offset = calculate_f0_from_gradients(coefs_to_send_to_scanner_mt[1:], target_iso, slice_loc)
+            coefs_to_send_to_scanner_mt = [round(-f0_offset + coefs_to_send_to_scanner_mt[0])] + coefs_to_send_to_scanner_mt[1:]
 
         result_queue.put(Currents(coefs_to_send_to_scanner_mt, i_slice, f, repetition))
         eval_ok[k] = 1
@@ -1349,17 +1363,23 @@ def get_slice_mask_center_of_mass(nii_mask, slice_number) -> list:
     return ras_coords[:3].tolist()
 
 
-def get_mututal_information_obj(epi_rect_mask, anat_epi_space_rect_mask, coords):
+def get_mututal_information_obj(epi_rect_mask, anat_epi_space_rect_mask, coords, metric='ssim'):
     xmin, xmax, ymin, ymax = coords
     epi_rect_mask = epi_rect_mask[xmin:xmax, ymin:ymax]
     anat_epi_space_rect_mask = anat_epi_space_rect_mask[xmin:xmax, ymin:ymax]
-    mi = ssim(epi_rect_mask, anat_epi_space_rect_mask, data_range=anat_epi_space_rect_mask.max() - anat_epi_space_rect_mask.min(),
-               gaussian_weights=True,
-               sigma=0.5)
+    if metric == 'ssim':
+        mi = ssim(epi_rect_mask, anat_epi_space_rect_mask, data_range=anat_epi_space_rect_mask.max() - anat_epi_space_rect_mask.min(),
+                gaussian_weights=True,
+                sigma=0.5)
+    elif metric == 'nmi':
+        mi = (nmi(epi_rect_mask, anat_epi_space_rect_mask) - 1.5) * 2  # Normalize to be between -1 and 1
+    else:
+        raise ValueError(f"Metric {metric} not supported for mutual information objective function")
+    
     return mi
 
 
-def extract_rect_mask_coords(data_mask):
+def extract_rect_mask_coords(data_mask, extra_pad=5):
     """
     Create a square mask based on the center of mass of data_mask for each slice
     and extract a 2D array from nii_anat_epi_space. The square size is inferred
@@ -1367,6 +1387,7 @@ def extract_rect_mask_coords(data_mask):
 
     Args:
         data_mask (np.ndarray): 3D mask array (X, Y, Z).
+        extra_pad (int): Extra padding to add to the square size.
 
     Returns:
         list: Extracted 2D arrays for each slice.
@@ -1392,8 +1413,8 @@ def extract_rect_mask_coords(data_mask):
         rect_width = x_max_oval - x_min_oval
         rect_height = y_max_oval - y_min_oval
 
-        half_width = rect_width // 2 + 5
-        half_height = rect_height // 2 + 5
+        half_width = rect_width // 2 + extra_pad
+        half_height = rect_height // 2 + extra_pad
 
         # Define the rectangular region
         x_min = max(center_x - half_width, 0)
