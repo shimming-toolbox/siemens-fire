@@ -59,7 +59,7 @@ chmod +x docker/docker_tar_to_chroot.sh
 
 On Windows: 
 ```dos
-docker_to_chroot.bat st_chroot
+docker\docker_to_chroot.bat st_chroot
 ```
 
 **What happens during this step:**
