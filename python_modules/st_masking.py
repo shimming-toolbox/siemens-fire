@@ -128,9 +128,9 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
     #config['parameters']['method'] = 'sct_deepseg'
     #config['parameters']['sct_deepseg_create_circular_mask'] = 'True'
     #config['parameters']['sct_deepseg_mask_size'] = '20'
-    config['parameters']['method'] = 'sct_propseg'
-    config['parameters']['sct_propseg_contrast'] = 't2s'
-    config['parameters']['sct_propseg_include_csf'] = 'True'
+    #config['parameters']['method'] = 'sct_propseg'
+    #config['parameters']['sct_propseg_contrast'] = 't2s'
+    #config['parameters']['sct_propseg_include_csf'] = 'True'
 
     if isinstance(config, str):
         config_filename = f"{config}.json"
@@ -264,7 +264,7 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
             
             # Optionally create a circular mask around the centerline
             if include_csf:
-                subprocess.run(['sct_maths',
+                subprocess.run([os.path.join(path_sct_binaries, 'sct_maths'),
                                 '-i', fname_seg_mask_nii,
                                 '-add', fname_seg_csf_nii,
                                 '-o', fname_output_mask_nii],
