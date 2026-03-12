@@ -2,7 +2,6 @@ import copy
 import ctypes
 from dataclasses import dataclass
 from functools import partial
-from turtle import pd
 import ismrmrd
 from joblib import Parallel, delayed
 import json
@@ -352,7 +351,7 @@ def process(connection, config, metadata):
     objective = mrdhelper.get_json_config_param(config_dict, "objective", default="Sig int")
     use_f0_offset_from_gradients = mrdhelper.get_json_config_param(config_dict, "use_f0_offset_from_gradients", default=True, type="bool")
     # Todo TEMP: Remove this
-    #objective = "Sig int"
+    #objective = "Sig int + mi"
     #channels_to_shim = 'fz'
     #use_surrogate = False
     #use_f0_offset_from_gradients = True
@@ -758,7 +757,7 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
 
     currents_applied = True if item.user_int[5] == 1 else False
     # Todo: TEMP
-    # currents_applied = True
+    #currents_applied = True
 
     logging.info(f"B0 offset: {item.user_int[6] - (2 ** 16) if item.user_int[6] > 2 ** 15 else item.user_int[6]}")
 
