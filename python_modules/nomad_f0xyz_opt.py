@@ -2,6 +2,7 @@ import copy
 import ctypes
 from dataclasses import dataclass
 from functools import partial
+from turtle import pd
 import ismrmrd
 from joblib import Parallel, delayed
 import json
@@ -23,6 +24,10 @@ from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import normalized_mutual_information as nmi
 from scipy.ndimage import center_of_mass
 
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
 from mrd2nii.mrd2nii_main import mrd2nii_volume, mrd2nii_stack
 from shimmingtoolbox.coils.coil import ScannerCoil
 
@@ -30,6 +35,8 @@ from shimmingtoolbox.coils.coil import ScannerCoil
 # Folder for debug output files
 debugFolder = None
 dataFolder = os.path.abspath("/tmp/share/saved_data")
+fname_all_currents = None
+fname_currents_per_volume = None
 fname_solution = None
 
 
@@ -60,7 +67,7 @@ is_obj_with_mi = False
 # mi_metric = 'ssim'
 mi_metric = 'nmi'
 if mi_metric == 'nmi':
-    HYPERPARAM_MI = 40.0
+    HYPERPARAM_MI = 150.0
 elif mi_metric == 'ssim':
     HYPERPARAM_MI = 80.0
 else:
@@ -202,7 +209,7 @@ def send_coefs_to_scanner(send_to_scanner_queue, print_queue, connection):
             break
 
 def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, result_thread,
-         print_queue, print_queue_thread, nb_slices, nb_repetitions, chronological_to_nifti_ordering, fatsat, send_to_scanner_queue, f_queues):
+         print_queue, print_queue_thread, nb_slices, nb_repetitions, chronological_to_nifti_ordering, fatsat, send_to_scanner_queue, f_queues, channels_to_shim):
     
     def process_results(currents, nb_slices, nb_repetitions, chronological_to_nifti_ordering):
 
@@ -230,8 +237,8 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
             currents_per_volume[nifti_slice, current.repetition, :] = a_cur
 
         logging.info("Processed currents")
-        np.save(os.path.join(debugFolder, f"all_currents.npy"), all_currents)
-        np.save(os.path.join(debugFolder, f"currents_per_volume.npy"), currents_per_volume)
+        np.save(fname_all_currents, all_currents)
+        np.save(fname_currents_per_volume, currents_per_volume)
         return opt_currents
     
     logging.info("Stopping NomadOpt")
@@ -307,6 +314,11 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
     # Write the currents to a text file
     write_text_file(opt_currents, nb_slices, fatsat)
     shutil.copyfile(fname_solution, os.path.join(dataFolder, "scanner_shim.txt"))
+
+    # Create interactive plot of the objective function and the currents
+    opt_channels = [channel for channel in channels_to_shim]
+    create_obj_interactive_plot(fname_currents_per_volume, path_output=os.path.join(debugFolder, 'obj_plots'), opt_channels=opt_channels)
+
     logging.info("Processing print queue")
     print_queue.put(None)
     messages = print_queue_thread.join()
@@ -340,12 +352,12 @@ def process(connection, config, metadata):
     objective = mrdhelper.get_json_config_param(config_dict, "objective", default="Sig int")
     use_f0_offset_from_gradients = mrdhelper.get_json_config_param(config_dict, "use_f0_offset_from_gradients", default=True, type="bool")
     # Todo TEMP: Remove this
-    objective = "Sig int + mi"
-    channels_to_shim = 'z'
-    use_surrogate = False
-    use_f0_offset_from_gradients = True
+    #objective = "Sig int"
+    #channels_to_shim = 'fz'
+    #use_surrogate = False
+    #use_f0_offset_from_gradients = True
 
-    global debugFolder, fname_solution, is_obj_with_sigint, is_obj_with_mi, is_obj_with_fmap
+    global debugFolder, fname_solution, is_obj_with_sigint, is_obj_with_mi, is_obj_with_fmap, fname_all_currents, fname_currents_per_volume
     is_obj_with_sigint = False
     is_obj_with_mi = False
     is_obj_with_fmap = False
@@ -379,6 +391,8 @@ def process(connection, config, metadata):
         shutil.rmtree(debugFolder)
     os.makedirs(debugFolder)
     fname_solution = os.path.join(debugFolder, "scanner_shim.txt")
+    fname_all_currents = os.path.join(debugFolder, f"all_currents.npy")
+    fname_currents_per_volume = os.path.join(debugFolder, f"currents_per_volume.npy")
 
     # Metadata should be MRD formatted header, but may be a string
     try:
@@ -724,7 +738,8 @@ def process(connection, config, metadata):
              chronological_to_nifti_ordering,
              fatsat,
              send_to_scanner_queue,
-             f_queues)
+             f_queues,
+             channels_to_shim)
         connection.send_close()
 
 def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, is_processing, f_queues, result_queue, nii_mask,
@@ -743,7 +758,7 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
 
     currents_applied = True if item.user_int[5] == 1 else False
     # Todo: TEMP
-    #currents_applied = True
+    # currents_applied = True
 
     logging.info(f"B0 offset: {item.user_int[6] - (2 ** 16) if item.user_int[6] > 2 ** 15 else item.user_int[6]}")
 
@@ -760,33 +775,38 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
             nomad_instance_stopped[slice_mrd] = True
             return 1, nomad_instance_stopped
 
-        # Use mrd2nii
+        # Use mrd2nii to convert the received slice to NIfTI format
         nii_tmp = mrd2nii_stack(metadata, item, include_slice_gap=True)
         if item.getHead().repetition == 20:
             nib.save(nii_tmp, f"{debugFolder}/slice{slice_nii}_rep{item.getHead().repetition}.nii.gz")
             nib.Nifti1Image(mask, nii_tmp.affine, header=nii_tmp.header)
             nib.save(nib.Nifti1Image(mask, nii_tmp.affine, header=nii_tmp.header), f"{debugFolder}/mask_slice{slice_nii}.nii.gz")
         
-        if is_obj_with_sigint and not is_obj_with_mi:
-            avg_sig_int = np.average(nii_tmp.get_fdata(), weights=mask)
-            f_queues[slice_mrd].put((avg_sig_int, item.getHead().repetition))
-            logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: avg sig int: {avg_sig_int}")
-        elif not is_obj_with_sigint and is_obj_with_mi:
-            mutual_info = get_mututal_information_obj(nii_tmp.get_fdata(), nii_anat_epi_space.get_fdata()[..., slice_nii], square_mask_coords[slice_nii], metric=mi_metric)
-            f_queues[slice_mrd].put((HYPERPARAM_MI * mutual_info, item.getHead().repetition))
-            logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: mutual info: {HYPERPARAM_MI * mutual_info}")
-        elif is_obj_with_sigint and is_obj_with_mi:
-            avg_sig_int = np.average(nii_tmp.get_fdata(), weights=mask)
-            mutual_info = get_mututal_information_obj(nii_tmp.get_fdata(), nii_anat_epi_space.get_fdata()[..., slice_nii], square_mask_coords[slice_nii], metric=mi_metric)
-            f_queues[slice_mrd].put((avg_sig_int + (HYPERPARAM_MI * mutual_info), item.getHead().repetition))
-            logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: avg sig int: {avg_sig_int}, mutual info: {HYPERPARAM_MI * mutual_info}, sig int + mutual info: {avg_sig_int + (HYPERPARAM_MI * mutual_info)}")
-        else:
-            raise RuntimeError("Unreachable. At least one of 'sig int' or 'mi' objective function should be selected")
+        obj = calculate_obj_function(is_obj_with_sigint, is_obj_with_mi, nii_tmp, mask, nii_anat_epi_space, square_mask_coords, slice_nii)
+        f_queues[slice_mrd].put((obj, item.getHead().repetition))
+        logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: objective: {obj}")
+        
     else:
         logging.info(f"Image received for slice: {slice_mrd}, but no currents were applied")
         return 0, nomad_instance_stopped
 
     return 1, nomad_instance_stopped
+
+
+def calculate_obj_function(use_sig_int, use_mi, nii_slice, mask, nii_anat_epi_space, square_mask_coords, slice_nii):
+    if use_sig_int and not use_mi:
+        obj = np.average(nii_slice.get_fdata(), weights=mask)
+    elif not use_sig_int and use_mi:
+        mutual_info = get_mututal_information_obj(nii_slice.get_fdata(), nii_anat_epi_space.get_fdata()[..., slice_nii], square_mask_coords[slice_nii], metric=mi_metric)
+        obj = HYPERPARAM_MI * mutual_info
+    elif use_sig_int and use_mi:
+        avg_sig_int = np.average(nii_slice.get_fdata(), weights=mask)
+        mutual_info = get_mututal_information_obj(nii_slice.get_fdata(), nii_anat_epi_space.get_fdata()[..., slice_nii], square_mask_coords[slice_nii], metric=mi_metric)
+        obj = avg_sig_int + (HYPERPARAM_MI * mutual_info)
+    else:
+        raise RuntimeError("Unreachable. At least one of 'sig int' or 'mi' objective function should be selected")
+
+    return obj
 
 
 def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queue, result_queue, send_to_scanner_queue,
@@ -1372,7 +1392,7 @@ def get_mututal_information_obj(epi_rect_mask, anat_epi_space_rect_mask, coords,
                 gaussian_weights=True,
                 sigma=0.5)
     elif metric == 'nmi':
-        mi = (nmi(epi_rect_mask, anat_epi_space_rect_mask) - 1.5) * 2  # Normalize to be between -1 and 1
+        mi = (nmi(epi_rect_mask, anat_epi_space_rect_mask) - 1) * 1  # Normalize to be between 0 and 1
     else:
         raise ValueError(f"Metric {metric} not supported for mutual information objective function")
     
@@ -1427,6 +1447,93 @@ def extract_rect_mask_coords(data_mask, extra_pad=5):
 
     return extracted_coords
 
+
+
+def create_obj_interactive_plot(fname_currents_per_volume, path_output, opt_channels):
+
+    if not os.path.exists(path_output):
+        os.makedirs(path_output)
+
+    curr_per_volume = np.load(fname_currents_per_volume)  # shape (n_slices, n_iterations, n_channels + 1) with the last dimension being the objective value
+    n_slices = curr_per_volume.shape[0]
+
+    # Reorder according to the last column (objective value) 
+    if opt_channels == ['f', 'z']:
+        workers = []
+        for i_slice in range(n_slices):
+            worker = Process(target=plot_shim_path_wrapper, args=(i_slice, curr_per_volume, path_output))
+            worker.start()
+            workers.append(worker)
+        
+        for worker in workers:
+            worker.join()
+    else:
+        print("Shim path plotting is only implemented for ['f', 'z'] optimization channels.")
+
+
+def plot_shim_path_wrapper(slice_idx, curr_per_volume, path_output):
+
+    signal_intensity = curr_per_volume[slice_idx, :, -1]
+    fname_fig = os.path.join(path_output, f"slice_{slice_idx}_obj_through_time.png")
+    plot_obj_through_time(signal_intensity, fname_fig)
+    
+    currents = curr_per_volume[slice_idx, :, :-1]
+    plot_shim_path(currents, signal_intensity, os.path.join(path_output, f"slice_{slice_idx}_shim_path.gif"))
+
+
+def plot_shim_path(currents: np.ndarray, obj_values: np.ndarray, fname_fig:str):
+
+    idx_rem = []
+    for idx in range(4):
+        if np.allclose(np.nan_to_num(currents[:, idx]), 0):
+            idx_rem.append(idx)
+    currents_plot = np.delete(currents, idx_rem, axis=1)
+
+    if currents_plot.shape[1] != 2:
+        raise ValueError("Currents array must have exactly two current channels.")
+
+    fig = plt.Figure(figsize=(5, 5))
+    ax = fig.add_subplot(1, 1, 1)
+
+    norm = plt.Normalize(np.nan_to_num(obj_values).min(), np.nan_to_num(obj_values).max())
+    scat = ax.scatter(currents_plot[0, 0], currents_plot[0, 1], c=obj_values[1], norm=norm, cmap='jet')
+    ax.set(xlim=[np.nan_to_num(currents_plot)[:, 0].min(), np.nan_to_num(currents_plot)[:, 0].max()], ylim=[np.nan_to_num(currents_plot)[:, 1].min(), np.nan_to_num(currents_plot)[:, 1].max()], xlabel='f', ylabel='z')
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="5%", pad=0.05)
+    cax.set_title("Sig int.", fontsize=14)
+    fig.colorbar(scat, cax=cax)
+
+    def update(frame):
+        # for each frame, update the data stored on each artist.
+        x = currents_plot[:frame+1, 0]
+        y = currents_plot[:frame+1, 1]
+        # z = obj_values[frame]
+        # update the scatter plot:
+        data = np.stack([x, y]).T
+        scat.set_offsets(data)
+        scat.set_array(obj_values[:frame+1])
+        # scat.set_clim(vmin=min(obj_values), vmax=max(obj_values))
+        return (scat,)
+
+    ani = animation.FuncAnimation(fig=fig, func=update, frames=currents.shape[0], interval=30)
+    ani.save(filename=fname_fig, writer='pillow')
+    #plt.close('all')
+
+
+def plot_obj_through_time(obj_values: np.ndarray, fname_fig):
+    """ Plot objective function values through time.
+
+    Args:
+        obj_values (np.ndarray): Array of objective function values.
+    """
+    fig = plt.Figure(figsize=(5, 5))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.plot(obj_values, marker='o')
+    ax.set_title("Objective Function Values Through Time")
+    ax.set_xlabel("Time Point")
+    ax.set_ylabel("Objective Function Value")
+    ax.grid()
+    fig.savefig(fname_fig)
 
 
 class TerminationException(Exception):
