@@ -784,7 +784,6 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
         obj = calculate_obj_function(is_obj_with_sigint, is_obj_with_mi, nii_tmp, mask, nii_anat_epi_space, square_mask_coords, slice_nii)
         f_queues[slice_mrd].put((obj, item.getHead().repetition))
         logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: objective: {obj}")
-        
     else:
         logging.info(f"Image received for slice: {slice_mrd}, but no currents were applied")
         return 0, nomad_instance_stopped
@@ -1398,7 +1397,7 @@ def get_mututal_information_obj(epi_rect_mask, anat_epi_space_rect_mask, coords,
     return mi
 
 
-def extract_rect_mask_coords(data_mask, extra_pad=5):
+def extract_rect_mask_coords(data_mask, extra_pad=1000):
     """
     Create a square mask based on the center of mass of data_mask for each slice
     and extract a 2D array from nii_anat_epi_space. The square size is inferred
