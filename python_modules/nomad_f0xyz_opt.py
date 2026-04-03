@@ -66,7 +66,7 @@ is_obj_with_mi = False
 # mi_metric = 'ssim'
 mi_metric = 'nmi'
 if mi_metric == 'nmi':
-    HYPERPARAM_MI = 150.0
+    HYPERPARAM_MI = 1000.0
 elif mi_metric == 'ssim':
     HYPERPARAM_MI = 80.0
 else:
@@ -352,7 +352,7 @@ def process(connection, config, metadata):
     use_f0_offset_from_gradients = mrdhelper.get_json_config_param(config_dict, "use_f0_offset_from_gradients", default=True, type="bool")
     # Todo TEMP: Remove this
     #objective = "Sig int + mi"
-    #channels_to_shim = 'fz'
+    #channels_to_shim = 'fxyz'
     #use_surrogate = False
     #use_f0_offset_from_gradients = True
 
