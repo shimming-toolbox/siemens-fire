@@ -668,7 +668,7 @@ def process(connection, config, metadata):
                                     if b0_rmse_coef == 0:
                                         logging.warning("b0_rmse_coef is 0 for slice %d, setting it to 50", i_slice)
                                         b0_rmse_coef = 50
-                                    list_max_rmse.append(MAX_RMSE_SCALAR * b0_rmse_coef)
+                                    list_max_rmse.append(max(MAX_RMSE_SCALAR * b0_rmse_coef, 50.0))
 
                                 if use_surrogate:
                                     # Send the mask when we have it so that the surrogate opt can start processing
@@ -915,7 +915,6 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
             slice_loc = slice_loc_queue.get()
             target_iso = slice_loc_queue.get()
             is_slice_loc_ready = True
-
 
     # Send the points to the scanner
     for i in range(nb_points):
