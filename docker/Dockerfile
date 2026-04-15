@@ -81,9 +81,10 @@ COPY ./python_modules/nomad_f0xyz_opt.py  /opt/code/python-ismrmrd-server
 COPY ./python_modules/nomad_f0xyz_opt.json  /opt/code/python-ismrmrd-server
 COPY ./python_modules/finst_shim.py  /opt/code/python-ismrmrd-server
 COPY ./python_modules/finst_shim.json  /opt/code/python-ismrmrd-server
+COPY ./python_modules/navi_corr.py  /opt/code/python-ismrmrd-server
 
 # Set the st_masking module as the default module
-# CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate shim-dev && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]
+#CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate base && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]
 CMD /bin/bash
 
 # Clean up to reduce image size
