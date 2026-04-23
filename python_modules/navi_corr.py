@@ -14,6 +14,8 @@ import mrdhelper
 import constants
 from time import perf_counter
 
+from common import SiemensRAW
+
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
 
@@ -23,10 +25,6 @@ def process(connection, config, mrdHeader):
     # mrdHeader should be xml formatted MRD header, but may be a string
     # if it failed conversion earlier
     try:
-        # Disabled due to incompatibility between PyXB and Python 3.8:
-        # https://github.com/pabigot/pyxb/issues/123
-        # # logging.info("MRD header: \n%s", mrdHeader.toxml('utf-8'))
-
         logging.info("Incoming dataset contains %d encodings", len(mrdHeader.encoding))
         logging.info("First encoding is of type '%s', with a matrix size of (%s x %s x %s) and a field of view of (%s x %s x %s)mm^3", 
             mrdHeader.encoding[0].trajectory, 
@@ -41,17 +39,14 @@ def process(connection, config, mrdHeader):
         logging.info("Improperly formatted MRD header: \n%s", mrdHeader)
 
     # Continuously parse incoming data parsed from MRD messages
-    currentSeries = 0
-    acqGroup = []
-    imgGroup = []
-    waveformGroup = []
+    raw = SiemensRAW(mrdHeader)
     try:
         for item in connection:
             # ----------------------------------------------------------
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
-                acqGroup.append(item)
+                raw.add_acq(item)
 
             elif item is None:
                 break
@@ -59,15 +54,24 @@ def process(connection, config, mrdHeader):
             else:
                 logging.error("Unsupported data type %s", type(item).__name__)
 
-        # Process any remaining groups of raw or image data.  This can 
-        # happen if the trigger condition for these groups are not met.
-        # This is also a fallback for handling image data, as the last
-        # image in a series is typically not separately flagged.
-        if len(acqGroup) > 0:
-            logging.info("Processing a group of k-space data (untriggered)")
-            #image = process_raw(acqGroup, connection, config, mrdHeader)
-            #connection.send_image(image)
-            acqGroup = []
+        # Preprocessing acquisitions
+        raw.extract_noise()
+        raw.remove_phase_stabilization_references()
+
+        # Build kspace and navigator data structure
+        raw.build_kspace()
+
+        # Save it for tests
+        raw.save_kspace("ice_data.npz")
+
+        # Extract phase for each repetition (TEMP for current data with multiple reps)
+        S = raw.navigator[:, 0, 0, 0, 0, :, 0, :, :, :] # shape : (rep, slices, lines, samples, coils)
+
+        S = np.transpose(S, (0, 3, 2, 1, 4)) # shape : (rep, samples, lines, slices, coils)
+
+        phase_extractions = np.concat([phase_extraction(s, raw.noise.data.T) for s in S])
+        np.save("phases.npy", phase_extractions)
+
 
     except Exception as e:
         logging.error(traceback.format_exc())
@@ -75,3 +79,26 @@ def process(connection, config, mrdHeader):
 
     finally:
         connection.send_close()
+
+def phase_extraction(navigator, noise):
+    """
+    
+    Arguments:
+    navigator -- shape : (j, l, p, c) -> (samples, lines, slices, coils)
+    noise     -- shape : (j, c)       -> (samples, coils)
+    """
+    delta_S = navigator * np.exp(-1j*np.angle(navigator[:, [0], :, :]))
+
+    w = np.abs(delta_S) / np.std(noise, axis=0) # TODO: check if should need to raise to power 2
+    w_tilde = w/np.sum(w, axis=(0, 3), keepdims=True)
+    w_tilde[np.isnan(w_tilde)] = 0.0
+
+    delta_S = np.sum(w_tilde * delta_S, axis=(0, 3))
+
+    delta_phi_mean = np.angle(np.mean(delta_S, axis=0))
+
+    delta_S_tilde = delta_S * np.exp(-1j * delta_phi_mean)
+
+    delta_phi = np.angle(delta_S_tilde)
+
+    return delta_phi
