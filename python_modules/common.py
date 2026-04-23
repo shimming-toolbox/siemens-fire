@@ -1,6 +1,7 @@
 import ismrmrd
 import numpy as np
 import mrd_flags
+import itertools
 
 EXCLUSION_FLAGS = [
     "ISMRMRD_ACQ_IS_NOISE_MEASUREMENT",
@@ -33,24 +34,60 @@ KSPACE_LAYOUT_IDX = [
 ]
 
 class SiemensRAW:
-    def __init__(self, filename: str) -> None:
-        self.dset = ismrmrd.Dataset(filename, "dataset")
-        self.header = ismrmrd.xsd.CreateFromDocument(self.dset.read_xml_header())
-        self.n_acq = self.dset.number_of_acquisitions()
+    def __init__(self, mrd_header) -> None:
+        #self.dset = ismrmrd.Dataset(filename, "dataset")
+        self.header = mrd_header
+        #self.n_acq = self.dset.number_of_acquisitions()
 
+        self.acquisitions: list[ismrmrd.Acquisition] = []
         self.kspace = None
         self.navigator = None
+        self.noise = None
 
     def reconstruct_images():
         pass
+
+    def add_acq(self, acq: ismrmrd.Acquisition) -> None:
+        self.acquisitions.append(acq)
+
+    def extract_noise(self) -> None:
+        # Assume noise is first acquisition
+        if self.acquisitions[0].is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
+            self.noise = self.acquisitions[0]
+            self.acquisitions = self.acquisitions[1:]
+        else:
+            raise ValueError("Noise acquisition not found")
+
+    def remove_phase_stabilization_references(self) -> None:
+        # At beginning of each repetition, you have n_slices * (n_echo + 1)
+        # of ISMRMRD_ACQ_IS_PHASE_STABILIZATION_REFERENCE acquisitions. The +1
+        # is for the phase stabilization acq, labeled as echo=0.
+
+        k_space_encode_1_steps = set()
+        for acq in self.acquisitions:
+            k_space_encode_1_steps.add(acq.getHead().idx.kspace_encode_step_1)
+
+        ny = len(k_space_encode_1_steps)
+
+        n_reps, _, _, _, n_echoes, n_slices, _, _, _, _ = self._get_kspace_dims()
+        n_echoes += 1 # fifth echo for phase stabilization
+
+        indices_to_remove = range(0)
+        for n in range(n_reps):
+            a = n * (n_echoes*n_slices*ny)
+            b = a + n_echoes*n_slices
+            indices_to_remove = itertools.chain(indices_to_remove, range(a, b))
+        indices_to_remove = set(indices_to_remove) # for constant lookup
+
+        self.acquisitions = [acq for i, acq in enumerate(self.acquisitions) if i not in indices_to_remove]
 
     def build_kspace(self) -> None:
         kspace = np.zeros(self._get_kspace_dims(), dtype=np.complex128)
         navigator = np.zeros_like(kspace)
 
         used_idx = set()
-        for i in range(self.n_acq):
-            acq = self.dset.read_acquisition(i)
+        for i in range(len(self.acquisitions)):
+            acq = self.acquisitions[i]
 
             if not self._check_for_flags(acq):
                 continue
@@ -65,7 +102,7 @@ class SiemensRAW:
                 raise IndexError(f"Index already filled: {idx}")
             used_idx.add(idx)
 
-            if acq.is_flag_set(ismrmrd.ACQ_IS_PHASE_STABILIZATION):
+            if acq.idx.contrast == 0 and acq.scan_counter % 5 == 1:
                 navigator[*idx, :, :] = data
             else:
                 kspace[*idx, :, :] = data
