@@ -12,7 +12,7 @@
             "program": "/opt/code/python-ismrmrd-server/main.py",
             "args": [
                 "-H", "0.0.0.0",
-                "-p", "9002",
+                "-p", "9020",
                 // "-v",
                 // "-s"
             ],
