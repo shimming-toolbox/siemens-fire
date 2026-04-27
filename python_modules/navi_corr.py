@@ -69,9 +69,18 @@ def process(connection, config, mrdHeader):
 
         S = np.transpose(S, (0, 3, 2, 1, 4)) # shape : (rep, samples, lines, slices, coils)
 
-        phase_extractions = np.concat([phase_extraction(s, raw.noise.data.T) for s in S])
-        np.save("phases.npy", phase_extractions)
+        phase_extractions = np.stack([phase_extraction(s, raw.noise.data.T) for s in S])
+        nx = mrdHeader.encoding[0].encodedSpace.matrixSize.x
 
+        # À coder autrement qu'en dur comme ça. dt est dans le header
+        # d'acq, les temps d'echo disparaissent dans FIRE par contre.
+        # Cependant, ils sont dans le header MRD.
+        echo_times = np.array([6900e-6, 10920e-6, 14940e-6, 18960e-6])
+        dt = 5e-6
+
+        corrected_raw = kspace_correction(raw.kspace, field_conversion(phase_extractions, 24e-3), nx, echo_times, dt)
+        np.save("phases.npy", phase_extractions)
+        np.save("corrected.npy", corrected_raw)
 
     except Exception as e:
         logging.error(traceback.format_exc())
@@ -102,3 +111,17 @@ def phase_extraction(navigator, noise):
     delta_phi = np.angle(delta_S_tilde)
 
     return delta_phi
+
+def field_conversion(nav_phases, te_nav):
+    return nav_phases/te_nav
+
+def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt):
+    t = np.array([(j - n_samples/2)*dt for j in range(n_samples)])
+    t = np.repeat(t[:, np.newaxis], echo_times.shape[0], axis=1)
+
+    t += echo_times # will probably crash
+
+    demodulation = np.exp(-1j * np.einsum('rlp,je->replj', field_estimates, t))
+
+    # TODO: handle all the dimensions correctly instead of squeezing
+    return raw_data.squeeze()*demodulation[..., np.newaxis] # again check shape for broadcasting
