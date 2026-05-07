@@ -1,0 +1,14 @@
+[project]
+name = "siemens-fire"
+version = "0.1.0"
+description = "Additionnal modules for ISMRMRD server"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "ismrmrd>=1.14.2",
+    "matplotlib>=3.10.8",
+    "numpy==2.2.6",
+    "pygrappa>=0.26.3",
+    "scikit-image>=0.26.0",
+    "tqdm>=4.67.3",
+]
