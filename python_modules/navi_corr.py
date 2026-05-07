@@ -13,6 +13,7 @@ import re
 import mrdhelper
 import constants
 from time import perf_counter
+from pygrappa import grappa
 
 from common import SiemensRAW
 
@@ -76,11 +77,12 @@ def process(connection, config, mrdHeader):
         # d'acq, les temps d'echo disparaissent dans FIRE par contre.
         # Cependant, ils sont dans le header MRD.
         echo_times = np.array([6900e-6, 10920e-6, 14940e-6, 18960e-6])
+        navigator_te = 24e-3
         dt = 5e-6
 
-        corrected_raw = kspace_correction(raw.kspace, field_conversion(phase_extractions, 24e-3), nx, echo_times, dt)
-        np.save("phases.npy", phase_extractions)
-        np.save("corrected.npy", corrected_raw)
+        corrected_raw = kspace_correction(raw.kspace, field_conversion(phase_extractions, navigator_te), nx, echo_times, dt)
+
+        corrected_images = grappa_reconstruction(corrected_raw, corrected_raw * raw.acs_mask.squeeze())
 
     except Exception as e:
         logging.error(traceback.format_exc())
@@ -125,3 +127,23 @@ def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt):
 
     # TODO: handle all the dimensions correctly instead of squeezing
     return raw_data.squeeze()*demodulation[..., np.newaxis] # again check shape for broadcasting
+
+def grappa_reconstruction(kspace, acs_lines):
+
+    def _grappa(kspace, acs_lines):
+        calib = np.trim_zeros(acs_lines)
+        # transpose, because pygrappa assumes (x, y, c) and not (y, x, c) like we have
+        calib = np.transpose(calib, (1, 0, 2))
+        k = np.transpose(kspace, (1, 0, 2))
+        # tranpose back to keep it consistent with the rest of our code
+        return np.transpose(grappa(k, calib), (1, 0, 2))
+
+    *leading, y, x, c = kspace.shape
+
+    # (-1) in reshape means it's inferred from the other dims
+    kspace_r = kspace.reshape(-1, y, x, c)
+    acs_lines_r = acs_lines.reshape(-1, y, x, c)
+
+    results = np.stack([_grappa(kspace_r[i], acs_lines_r[i]) for i in range(kspace_r.shape[0])])
+
+    return results.reshape(*leading, y, x, c)
