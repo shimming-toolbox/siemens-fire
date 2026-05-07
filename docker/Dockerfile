@@ -68,6 +68,15 @@ RUN mkdir /opt/code/prelude && \
     curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
     sudo install /opt/code/prelude/prelude /usr/local/bin
 
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /usr/local/bin/uv
+# Add uv files
+COPY ./uv/.python-version /opt/code/python-ismrmrd-server
+COPY ./uv/pyproject.toml /opt/code/python-ismrmrd-server
+COPY ./uv/uv.lock /opt/code/python-ismrmrd-server
+# Install python packages
+RUN uv sync --frozen --project /opt/code/python-ismrmrd-server
+
 FROM mrd_converter AS python-mrd-devcontainer
 
 # Add ST modules
