@@ -40,6 +40,7 @@ class SiemensRAW:
         #self.n_acq = self.dset.number_of_acquisitions()
 
         self.acquisitions: list[ismrmrd.Acquisition] = []
+        self.acs_mask = None # assuming they are the same for every raw kspace
         self.kspace = None
         self.navigator = None
         self.noise = None
@@ -74,7 +75,7 @@ class SiemensRAW:
 
         indices_to_remove = range(0)
         for n in range(n_reps):
-            a = n * (n_echoes*n_slices*ny)
+            a = n * (n_echoes*n_slices*ny) + n * (n_echoes*n_slices)
             b = a + n_echoes*n_slices
             indices_to_remove = itertools.chain(indices_to_remove, range(a, b))
         indices_to_remove = set(indices_to_remove) # for constant lookup
@@ -84,6 +85,7 @@ class SiemensRAW:
     def build_kspace(self) -> None:
         kspace = np.zeros(self._get_kspace_dims(), dtype=np.complex128)
         navigator = np.zeros_like(kspace)
+        acs_mask = np.zeros_like(kspace)
 
         used_idx = set()
         for i in range(len(self.acquisitions)):
@@ -97,18 +99,21 @@ class SiemensRAW:
             # new shape: (samples, n_coils)
             data = data.T
 
-            idx = (getattr(acq.idx, d) for d in KSPACE_LAYOUT_IDX)
-            if idx in used_idx:
+            idx = tuple(getattr(acq.idx, d) for d in KSPACE_LAYOUT_IDX)
+            if idx in used_idx and not (acq.idx.contrast == 0 and acq.scan_counter % 5 == 1):
                 raise IndexError(f"Index already filled: {idx}")
             used_idx.add(idx)
 
-            if acq.idx.contrast == 0 and acq.scan_counter % 5 == 1:
+            if acq.idx.contrast == 0 and acq.scan_counter % 5 == 1: # TODO: double check for every repetition
                 navigator[*idx, :, :] = data
             else:
                 kspace[*idx, :, :] = data
+                if acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION) or acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING):
+                    acs_mask[*idx, :, :] = True
 
         self.kspace = kspace
         self.navigator = navigator
+        self.acs_mask = acs_mask
 
     def load_kspace(self, filename: str) -> None:
         data = np.load(filename)
