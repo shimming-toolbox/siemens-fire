@@ -80,9 +80,13 @@ def process(connection, config, mrdHeader):
         navigator_te = 24e-3
         dt = 5e-6
 
+        # Apply navigator correction
         corrected_raw = kspace_correction(raw.kspace, field_conversion(phase_extractions, navigator_te), nx, echo_times, dt)
+        # Use GRAPPA to fill in missing kspace lines
+        corrected_raw = grappa_reconstruction(corrected_raw, corrected_raw * raw.acs_mask.squeeze())
+        # Preprocessing before sending it back to ICE
+        corrected_raw = process_raw(corrected_raw)
 
-        corrected_images = grappa_reconstruction(corrected_raw, corrected_raw * raw.acs_mask.squeeze())
 
     except Exception as e:
         logging.error(traceback.format_exc())
@@ -90,6 +94,44 @@ def process(connection, config, mrdHeader):
 
     finally:
         connection.send_close()
+
+def process_raw(raw):
+    # assumed shape : (repetitions, echoes, slices, y, x, coils)
+    #                 (0          , 1     , 2,    , 3, 4, 5) 
+
+    data = np.flip(raw, (3, 4)) # inverser les données en x et y for some reason
+    data = reconstruct_image(data)
+    data *= np.prod(data.shape) # FFT scaling, for consistency with ICE apparently
+
+    # RMS (temporary)
+    data = coil_combination(data)
+
+    # Remove readout oversampling by cropping
+    data = remove_oversampling(data, 4)
+
+    return data
+
+def remove_oversampling(data, readout_axis, oversampling_factor=2):
+    nx = data.shape[readout_axis]
+    recon_size = nx // oversampling_factor
+    start = (nx - recon_size) // 2
+
+    return data.take(np.arange(start, start+recon_size), axis=readout_axis)
+
+def coil_combination(data, coil_axis=-1):
+    return np.sqrt(np.sum(np.square(data), axis=coil_axis))
+
+
+def reconstruct_image(kspace, axes=(3, 4)):
+    # First ifftshift, because numpy assumes the DC component to be at index 0.
+    # Physically, the acquisition has the DC component at its center and the high frequencies at its edges
+    image = np.fft.ifftshift(kspace, axes=axes)
+    # Inverse FFT to get the image
+    image = np.fft.ifft2(image, axes=axes)
+    # Pour replacer l'objet au centre de l'image?
+    image = np.fft.fftshift(image, axes=axes)
+
+    return image
 
 def phase_extraction(navigator, noise):
     """
