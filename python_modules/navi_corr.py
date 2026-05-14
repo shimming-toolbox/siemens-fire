@@ -85,8 +85,16 @@ def process(connection, config, mrdHeader):
         # Use GRAPPA to fill in missing kspace lines
         corrected_raw = grappa_reconstruction(corrected_raw, corrected_raw * raw.acs_mask.squeeze())
         # Preprocessing before sending it back to ICE
-        corrected_raw = process_raw(corrected_raw)
+        images = process_raw(corrected_raw)
 
+        field_of_view = (ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.z))
+
+        ismrmrd_images = convert_to_ismrmrd_images(images, raw.acquisitions[0].getHead(), field_of_view)
+
+        for img in ismrmrd_images:
+            connection.send_image(img)
 
     except Exception as e:
         logging.error(traceback.format_exc())
@@ -94,6 +102,29 @@ def process(connection, config, mrdHeader):
 
     finally:
         connection.send_close()
+
+def convert_to_ismrmrd_images(images, acq_header, fov):
+    images_out = []
+    
+    *_, y, x = images.shape
+
+    for i, img in enumerate(images.reshape(-1, y, x)):
+        ismrmrd_image = ismrmrd.Image.from_array(img, transpose=False)
+        ismrmrd_image.setHead(mrdhelper.update_img_header_from_raw(ismrmrd_image.getHead(), acq_header))
+        ismrmrd_image.field_of_view = fov
+        ismrmrd_image.image_index = i
+
+        # Set ISMRMRD Meta Attributes
+        tmp_meta = ismrmrd.Meta()
+        tmp_meta['DataRole']               = 'Image'
+        tmp_meta['ImageProcessingHistory'] = ['FIRE', 'PYTHON']
+        tmp_meta['Keep_image_geometry']    = 1
+
+        ismrmrd_image.attribute_string = tmp_meta.serialize()
+
+        images_out.append(ismrmrd_image)
+    
+    return images_out
 
 def process_raw(raw):
     # assumed shape : (repetitions, echoes, slices, y, x, coils)
