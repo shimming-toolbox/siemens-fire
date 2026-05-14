@@ -119,9 +119,10 @@ class SiemensRAW:
         data = np.load(filename)
         self.kspace = data['kspace']
         self.navigator = data['navigator']
+        self.acs_mask = data['acs_mask']
 
     def save_kspace(self, filename: str) -> None:
-        np.savez(filename, kspace=self.kspace, navigator=self.navigator)
+        np.savez(filename, kspace=self.kspace, navigator=self.navigator, acs_mask=self.acs_mask)
 
     def _get_kspace_dims(self):
         encoding_limits = self.header.encoding[0].encodingLimits
