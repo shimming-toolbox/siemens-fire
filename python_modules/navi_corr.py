@@ -75,10 +75,12 @@ def process(connection, config, mrdHeader):
         phase_extractions = np.stack([phase_extraction(s, raw.noise.data.T) for s in S])
         nx = mrdHeader.encoding[0].encodedSpace.matrixSize.x
 
-        # À coder autrement qu'en dur comme ça. dt est dans le header
-        # d'acq, les temps d'echo disparaissent dans FIRE par contre.
-        # Cependant, ils sont dans le header MRD.
-        echo_times = np.array([6900e-6, 10920e-6, 14940e-6, 18960e-6])
+        # les TE sont dans le header.
+        # Par contre, le temps d'écho du navigateur n'est pas dans le header
+        # Il serait supposé être dans les user_int des acqs, mais quand on passe
+        # par FIRE, il est absent.
+        # dt est dans le header de l'acquisition.
+        echo_times = np.array(mrdHeader.sequenceParameters.TE) * 1e-3
         navigator_te = 24e-3
         dt = 5e-6
 
