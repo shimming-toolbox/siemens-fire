@@ -61,9 +61,11 @@ def process(connection, config, mrdHeader):
 
         # Build kspace and navigator data structure
         raw.build_kspace()
-
         # Save it for tests
-        raw.save_kspace("ice_data.npz")
+        #raw.save_kspace("ice_data.npz")
+        
+        # Load precomputed kspace
+        #raw.load_kspace("ice_data.npz")
 
         # Extract phase for each repetition (TEMP for current data with multiple reps)
         S = raw.navigator[:, 0, 0, 0, 0, :, 0, :, :, :] # shape : (rep, slices, lines, samples, coils)
@@ -86,6 +88,11 @@ def process(connection, config, mrdHeader):
         corrected_raw = grappa_reconstruction(corrected_raw, corrected_raw * raw.acs_mask.squeeze())
         # Preprocessing before sending it back to ICE
         images = process_raw(corrected_raw)
+        
+        images = mag_images(images)
+
+        # Save images for faster testing
+        # np.save("images.npy", images)
 
         field_of_view = (ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -103,12 +110,20 @@ def process(connection, config, mrdHeader):
     finally:
         connection.send_close()
 
+def mag_images(images):
+    return np.abs(images).astype(np.float64)
+
+def convert_float64_to_int16(data):
+    return np.around(data * (2**12 - 1)/data.max()).astype(np.int16)
+
 def convert_to_ismrmrd_images(images, acq_header, fov):
     images_out = []
     
     *_, y, x = images.shape
 
-    for i, img in enumerate(images.reshape(-1, y, x)):
+    data = convert_float64_to_int16(images)
+
+    for i, img in enumerate(data.reshape(-1, y, x)):
         ismrmrd_image = ismrmrd.Image.from_array(img, transpose=False)
         ismrmrd_image.setHead(mrdhelper.update_img_header_from_raw(ismrmrd_image.getHead(), acq_header))
         ismrmrd_image.field_of_view = fov
