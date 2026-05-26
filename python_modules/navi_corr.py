@@ -14,6 +14,7 @@ import mrdhelper
 import constants
 from time import perf_counter
 from pygrappa import grappa
+from tempfile import mkdtemp
 
 from common import SiemensRAW
 
@@ -60,6 +61,7 @@ def process(connection, config, mrdHeader):
         raw.remove_phase_stabilization_references()
 
         # Build kspace and navigator data structure
+        print("Building kspace array...")
         raw.build_kspace()
         # Save it for tests
         #raw.save_kspace("ice_data.npz")
@@ -68,10 +70,12 @@ def process(connection, config, mrdHeader):
         #raw.load_kspace("ice_data.npz")
 
         # Extract phase for each repetition (TEMP for current data with multiple reps)
+        # TODO: This is not robust. Find a general way to deal with the multiple dims
         S = raw.navigator[:, 0, 0, 0, 0, :, 0, :, :, :] # shape : (rep, slices, lines, samples, coils)
 
         S = np.transpose(S, (0, 3, 2, 1, 4)) # shape : (rep, samples, lines, slices, coils)
 
+        print("Computing corrections...")
         phase_extractions = np.stack([phase_extraction(s, raw.noise.data.T) for s in S])
         nx = mrdHeader.encoding[0].encodedSpace.matrixSize.x
 
@@ -80,18 +84,21 @@ def process(connection, config, mrdHeader):
         # Il serait supposé être dans les user_int des acqs, mais quand on passe
         # par FIRE, il est absent.
         # dt est dans le header de l'acquisition.
-        echo_times = np.array(mrdHeader.sequenceParameters.TE) * 1e-3
+        echo_times = np.array(mrdHeader.sequenceParameters.TE, dtype=np.float32) * 1e-3
         navigator_te = 24e-3
         dt = 5e-6
 
         # Apply navigator correction
-        corrected_raw = kspace_correction(raw.kspace, field_conversion(phase_extractions, navigator_te), nx, echo_times, dt)
+        print("Applying corrections...")
+        field_estimates = field_conversion(phase_extractions, navigator_te)
+        corrected = kspace_correction(raw.kspace, field_estimates, nx, echo_times, dt)
         # Use GRAPPA to fill in missing kspace lines
-        corrected_raw = grappa_reconstruction(corrected_raw, corrected_raw * raw.acs_mask.squeeze())
+        print("GRAPPA correction...")
+        corrected = grappa_reconstruction(corrected, corrected * raw.acs_mask.squeeze())
         # Preprocessing before sending it back to ICE
-        images = process_raw(corrected_raw)
-        
-        images = mag_images(images)
+        print("Reconstruction...")
+        corrected = process_raw(corrected)
+        corrected = mag_images(corrected)
 
         # Save images for faster testing
         # np.save("images.npy", images)
@@ -100,8 +107,9 @@ def process(connection, config, mrdHeader):
                                 ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.y), 
                                 ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.z))
 
-        ismrmrd_images = convert_to_ismrmrd_images(images, raw.acquisitions[0].getHead(), field_of_view)
+        ismrmrd_images = convert_to_ismrmrd_images(corrected, raw.acquisitions[0].getHead(), field_of_view)
 
+        print("Sending images...")
         for img in ismrmrd_images:
             connection.send_image(img)
 
@@ -175,7 +183,7 @@ def reconstruct_image(kspace, axes=(3, 4)):
     # Physically, the acquisition has the DC component at its center and the high frequencies at its edges
     image = np.fft.ifftshift(kspace, axes=axes)
     # Inverse FFT to get the image
-    image = np.fft.ifft2(image, axes=axes)
+    np.fft.ifft2(image, axes=axes, out=image)
     # Pour replacer l'objet au centre de l'image?
     image = np.fft.fftshift(image, axes=axes)
 
@@ -188,10 +196,13 @@ def phase_extraction(navigator, noise):
     navigator -- shape : (j, l, p, c) -> (samples, lines, slices, coils)
     noise     -- shape : (j, c)       -> (samples, coils)
     """
-    delta_S = navigator * np.exp(-1j*np.angle(navigator[:, [0], :, :]))
+    # subtract first navigator phase to remove static phase contributions
+    delta_S = navigator * np.exp(-1j*np.angle(navigator[:, [0], :, :])) 
 
     w = np.abs(delta_S) / np.std(noise, axis=0) # TODO: check if should need to raise to power 2
+    # RuntimeWarning here because of dividing by zero
     w_tilde = w/np.sum(w, axis=(0, 3), keepdims=True)
+    # Replace resulting NaNs by zero
     w_tilde[np.isnan(w_tilde)] = 0.0
 
     delta_S = np.sum(w_tilde * delta_S, axis=(0, 3))
@@ -208,7 +219,7 @@ def field_conversion(nav_phases, te_nav):
     return nav_phases/te_nav
 
 def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt):
-    t = np.array([(j - n_samples/2)*dt for j in range(n_samples)])
+    t = np.array([(j - n_samples/2)*dt for j in range(n_samples)], dtype=np.float32)
     t = np.repeat(t[:, np.newaxis], echo_times.shape[0], axis=1)
 
     t += echo_times # will probably crash
@@ -234,6 +245,9 @@ def grappa_reconstruction(kspace, acs_lines):
     kspace_r = kspace.reshape(-1, y, x, c)
     acs_lines_r = acs_lines.reshape(-1, y, x, c)
 
-    results = np.stack([_grappa(kspace_r[i], acs_lines_r[i]) for i in range(kspace_r.shape[0])])
+    results = np.memmap(os.path.join(mkdtemp(), 'grappa.dat'), dtype=np.complex64, mode='w+', shape=kspace_r.shape)
+    for i in range(kspace_r.shape[0]):
+        results[i] = _grappa(kspace_r[i], acs_lines_r[i])
+    results.flush()
 
     return results.reshape(*leading, y, x, c)
