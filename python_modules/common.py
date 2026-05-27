@@ -82,7 +82,7 @@ class SiemensRAW:
 
         self.acquisitions = [acq for i, acq in enumerate(self.acquisitions) if i not in indices_to_remove]
 
-    def build_kspace(self) -> None:
+    def build_kspace(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         kspace = np.zeros(self._get_kspace_dims(), dtype=np.complex64)
         navigator = np.zeros_like(kspace)
         # Only need one contrast dimension for navigator
@@ -113,9 +113,11 @@ class SiemensRAW:
                 if acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION) or acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING):
                     acs_mask[*idx, :, :] = True
 
-        self.kspace = kspace
-        self.navigator = navigator
-        self.acs_mask = acs_mask
+        #self.kspace = kspace
+        #self.navigator = navigator
+        #self.acs_mask = acs_mask
+
+        return kspace, navigator, acs_mask
 
     def load_kspace(self, filename: str) -> None:
         data = np.load(filename)

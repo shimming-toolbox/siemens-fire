@@ -62,7 +62,7 @@ def process(connection, config, mrdHeader):
 
         # Build kspace and navigator data structure
         print("Building kspace array...")
-        raw.build_kspace()
+        kspace, navigator, acs_mask = raw.build_kspace()
         # Save it for tests
         #raw.save_kspace("ice_data.npz")
         
@@ -71,7 +71,7 @@ def process(connection, config, mrdHeader):
 
         # Extract phase for each repetition (TEMP for current data with multiple reps)
         # TODO: This is not robust. Find a general way to deal with the multiple dims
-        S = raw.navigator[:, 0, 0, 0, 0, :, 0, :, :, :] # shape : (rep, slices, lines, samples, coils)
+        S = navigator[:, 0, 0, 0, 0, :, 0, :, :, :] # shape : (rep, slices, lines, samples, coils)
 
         S = np.transpose(S, (0, 3, 2, 1, 4)) # shape : (rep, samples, lines, slices, coils)
 
@@ -91,10 +91,10 @@ def process(connection, config, mrdHeader):
         # Apply navigator correction
         print("Applying corrections...")
         field_estimates = field_conversion(phase_extractions, navigator_te)
-        corrected = kspace_correction(raw.kspace, field_estimates, nx, echo_times, dt)
+        corrected = kspace_correction(kspace, field_estimates, nx, echo_times, dt)
         # Use GRAPPA to fill in missing kspace lines
         print("GRAPPA correction...")
-        corrected = grappa_reconstruction(corrected, corrected * raw.acs_mask.squeeze())
+        corrected = grappa_reconstruction(corrected, corrected * acs_mask.squeeze())
         # Preprocessing before sending it back to ICE
         print("Reconstruction...")
         corrected = process_raw(corrected)
