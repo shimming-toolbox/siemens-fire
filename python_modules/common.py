@@ -51,6 +51,9 @@ class SiemensRAW:
     def add_acq(self, acq: ismrmrd.Acquisition) -> None:
         self.acquisitions.append(acq)
 
+    def reset_acq(self) -> None:
+        self.acquisitions = []
+
     def extract_noise(self) -> None:
         # Assume noise is first acquisition
         if self.acquisitions[0].is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
@@ -58,26 +61,22 @@ class SiemensRAW:
             self.acquisitions = self.acquisitions[1:]
         else:
             raise ValueError("Noise acquisition not found")
+    
+    def set_noise_acq(self, noise_acq) -> None:
+        self.noise = noise_acq
 
     def remove_phase_stabilization_references(self) -> None:
         # At beginning of each repetition, you have n_slices * (n_echo + 1)
         # of ISMRMRD_ACQ_IS_PHASE_STABILIZATION_REFERENCE acquisitions. The +1
         # is for the phase stabilization acq, labeled as echo=0.
 
-        k_space_encode_1_steps = set()
-        for acq in self.acquisitions:
-            k_space_encode_1_steps.add(acq.getHead().idx.kspace_encode_step_1)
-
-        ny = len(k_space_encode_1_steps)
-
-        n_reps, _, _, _, n_echoes, n_slices, _, _, _, _ = self._get_kspace_dims()
+        _, _, _, _, n_echoes, n_slices, _, _, _, _ = self._get_kspace_dims()
         n_echoes += 1 # fifth echo for phase stabilization
 
-        indices_to_remove = range(0)
-        for n in range(n_reps):
-            a = n * (n_echoes*n_slices*ny) + n * (n_echoes*n_slices)
-            b = a + n_echoes*n_slices
-            indices_to_remove = itertools.chain(indices_to_remove, range(a, b))
+        # TODO: verify this for each repetition
+        a = 0
+        b = a + n_echoes*n_slices
+        indices_to_remove = range(a, b)
         indices_to_remove = set(indices_to_remove) # for constant lookup
 
         self.acquisitions = [acq for i, acq in enumerate(self.acquisitions) if i not in indices_to_remove]

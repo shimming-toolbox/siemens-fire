@@ -41,14 +41,19 @@ def process(connection, config, mrdHeader):
         logging.info("Improperly formatted MRD header: \n%s", mrdHeader)
 
     # Continuously parse incoming data parsed from MRD messages
-    raw = SiemensRAW(mrdHeader)
     try:
+        raw = SiemensRAW(mrdHeader)
         for item in connection:
             # ----------------------------------------------------------
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
                 raw.add_acq(item)
+            
+                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
+                    images = process_raw(raw, mrdHeader)
+                    connection.send_image(images)
+                    raw.reset_acq()
 
             elif item is None:
                 break
@@ -56,69 +61,78 @@ def process(connection, config, mrdHeader):
             else:
                 logging.error("Unsupported data type %s", type(item).__name__)
 
-        # Preprocessing acquisitions
-        raw.extract_noise()
-        raw.remove_phase_stabilization_references()
-
-        # Build kspace and navigator data structure
-        print("Building kspace array...")
-        kspace, navigator, acs_mask = raw.build_kspace()
-        # Save it for tests
-        #raw.save_kspace("ice_data.npz")
-        
-        # Load precomputed kspace
-        #raw.load_kspace("ice_data.npz")
-
-        # Extract phase for each repetition (TEMP for current data with multiple reps)
-        # TODO: This is not robust. Find a general way to deal with the multiple dims
-        S = navigator[:, 0, 0, 0, 0, :, 0, :, :, :] # shape : (rep, slices, lines, samples, coils)
-
-        S = np.transpose(S, (0, 3, 2, 1, 4)) # shape : (rep, samples, lines, slices, coils)
-
-        print("Computing corrections...")
-        phase_extractions = np.stack([phase_extraction(s, raw.noise.data.T) for s in S])
-        nx = mrdHeader.encoding[0].encodedSpace.matrixSize.x
-
-        # les TE sont dans le header.
-        # Par contre, le temps d'écho du navigateur n'est pas dans le header
-        # Il serait supposé être dans les user_int des acqs, mais quand on passe
-        # par FIRE, il est absent.
-        # dt est dans le header de l'acquisition.
-        echo_times = np.array(mrdHeader.sequenceParameters.TE, dtype=np.float32) * 1e-3
-        navigator_te = 24e-3
-        dt = 5e-6
-
-        # Apply navigator correction
-        print("Applying corrections...")
-        field_estimates = field_conversion(phase_extractions, navigator_te)
-        corrected = kspace_correction(kspace, field_estimates, nx, echo_times, dt)
-        # Use GRAPPA to fill in missing kspace lines
-        print("GRAPPA correction...")
-        corrected = grappa_reconstruction(corrected, corrected * acs_mask.squeeze())
-        # Preprocessing before sending it back to ICE
-        print("Reconstruction...")
-        corrected = process_raw(corrected)
-        corrected = mag_images(corrected)
-
-        # Save images for faster testing
-        # np.save("images.npy", images)
-
-        field_of_view = (ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.z))
-
-        ismrmrd_images = convert_to_ismrmrd_images(corrected, raw.acquisitions[0].getHead(), field_of_view)
-
-        print("Sending images...")
-        for img in ismrmrd_images:
-            connection.send_image(img)
-
     except Exception as e:
         logging.error(traceback.format_exc())
         connection.send_logging(constants.MRD_LOGGING_ERROR, traceback.format_exc())
 
     finally:
         connection.send_close()
+
+def process_raw(raw, mrdHeader):
+    rep_index = raw.acquisitions[0].idx.repetition
+
+    # Preprocessing acquisitions
+    # First repetition will contain a noise acq. Extract it and keep it for all reps.
+    if raw.noise is None:
+        raw.extract_noise()
+    
+    # Remove useless acquisitions at the beginning of each rep
+    raw.remove_phase_stabilization_references()
+
+    # Build kspace and navigator data structure
+    print("Building kspace array...")
+    kspace, navigator, acs_mask = raw.build_kspace()
+    kspace = kspace[[rep_index], ...]
+    navigator = navigator[[rep_index], ...]
+    acs_mask = acs_mask[[rep_index], ...]
+
+    # Save it for tests
+    #raw.save_kspace("ice_data.npz")
+    
+    # Load precomputed kspace
+    #raw.load_kspace("ice_data.npz")
+
+    # Extract phase for each repetition (TEMP for current data with multiple reps)
+    # TODO: This is not robust. Find a general way to deal with the multiple dims
+    S = navigator[:, 0, 0, 0, 0, :, 0, :, :, :] # shape : (rep, slices, lines, samples, coils)
+    S = np.transpose(S, (0, 3, 2, 1, 4)) # shape : (rep, samples, lines, slices, coils)
+
+    print("Computing corrections...")
+    phase_extractions = np.stack([phase_extraction(s, raw.noise.data.T) for s in S])
+    nx = mrdHeader.encoding[0].encodedSpace.matrixSize.x
+    # les TE sont dans le header.
+    # Par contre, le temps d'écho du navigateur n'est pas dans le header
+    # Il serait supposé être dans les user_int des acqs, mais quand on passe
+    # par FIRE, il est absent.
+    # dt est dans le header de l'acquisition.
+    echo_times = np.array(mrdHeader.sequenceParameters.TE, dtype=np.float32) * 1e-3
+    navigator_te = 24e-3
+    dt = 5e-6
+
+    # Apply navigator correction
+    print("Applying corrections...")
+    field_estimates = field_conversion(phase_extractions, navigator_te)
+    corrected = kspace_correction(kspace, field_estimates, nx, echo_times, dt)
+
+    # Use GRAPPA to fill in missing kspace lines
+    print("GRAPPA correction...")
+    corrected = grappa_reconstruction(corrected, corrected * acs_mask.squeeze())
+
+    # Preprocessing before sending it back to ICE
+    print("Reconstruction...")
+    corrected = raw_to_image(corrected)
+    corrected = mag_images(corrected)
+
+    # Save images for faster testing
+    # np.save("images.npy", images)
+
+    field_of_view = (ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.x), 
+                            ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.y), 
+                            ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.z))
+
+    ismrmrd_images = convert_to_ismrmrd_images(corrected, raw.acquisitions[0].getHead(), field_of_view)
+    print("Sending images...")
+    return ismrmrd_images
 
 def mag_images(images):
     return np.abs(images).astype(np.float64)
@@ -151,7 +165,7 @@ def convert_to_ismrmrd_images(images, acq_header, fov):
     
     return images_out
 
-def process_raw(raw):
+def raw_to_image(raw):
     # assumed shape : (repetitions, echoes, slices, y, x, coils)
     #                 (0          , 1     , 2,    , 3, 4, 5) 
 
