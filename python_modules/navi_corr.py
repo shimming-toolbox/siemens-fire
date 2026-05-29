@@ -195,11 +195,15 @@ def coil_combination(data, coil_axis=-1):
 def reconstruct_image(kspace, axes=(3, 4)):
     # First ifftshift, because numpy assumes the DC component to be at index 0.
     # Physically, the acquisition has the DC component at its center and the high frequencies at its edges
-    image = np.fft.ifftshift(kspace, axes=axes)
+
+    # Preallocate an array on disk for our results
+    image = np.memmap(os.path.join(mkdtemp(), 'reconstruction.dat'), dtype=np.complex64, mode='w+', shape=kspace.shape)
+
+    image[:] = np.fft.ifftshift(kspace, axes=axes)
     # Inverse FFT to get the image
     np.fft.ifft2(image, axes=axes, out=image)
     # Pour replacer l'objet au centre de l'image?
-    image = np.fft.fftshift(image, axes=axes)
+    image[:] = np.fft.fftshift(image, axes=axes)
 
     return image
 

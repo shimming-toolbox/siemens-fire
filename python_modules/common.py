@@ -82,10 +82,13 @@ class SiemensRAW:
         self.acquisitions = [acq for i, acq in enumerate(self.acquisitions) if i not in indices_to_remove]
 
     def build_kspace(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        kspace = np.zeros(self._get_kspace_dims(), dtype=np.complex64)
-        navigator = np.zeros_like(kspace)
+        dims = self._get_kspace_dims()
+
+        kspace = np.zeros(dims, dtype=np.complex64)
+        # Navigator has same shape, except for the echoes
+        navigator = np.zeros(dims[:4] + (1,) + dims[5:], dtype=np.complex64)
         # Only need one contrast dimension for navigator
-        navigator = navigator[:, :, :, :, [0], :, :, :, :, :]
+        #navigator = navigator[:, :, :, :, [0], :, :, :, :, :]
         acs_mask = np.zeros_like(kspace, dtype=np.bool)
 
         used_idx = set()
