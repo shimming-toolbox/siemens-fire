@@ -201,7 +201,7 @@ def reconstruct_image(kspace, axes=(3, 4)):
 
     image[:] = np.fft.ifftshift(kspace, axes=axes)
     # Inverse FFT to get the image
-    np.fft.ifft2(image, axes=axes, out=image)
+    image[:] = np.fft.ifft2(image, axes=axes)
     # Pour replacer l'objet au centre de l'image?
     image[:] = np.fft.fftshift(image, axes=axes)
 
