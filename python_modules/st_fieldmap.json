@@ -4,6 +4,13 @@
         "unwrapper": "prelude",
         "gaussian-filter": "True",
         "sigma": "1",
-        "use_mask": "True"
+
+        "use_mask": "True",
+        "comment_if_use_mask_is_True": "Use the provided mask, allow to dilate the mask if needed",
+        "dilate_mask": "True",
+        "dilate_mask_kernel_size": "3",
+
+        "comment_if_use_mask_is_False": "Using thresholding instead of mask",
+        "threshold": "0.05"
     }
 }

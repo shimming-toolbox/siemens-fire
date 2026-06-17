@@ -478,7 +478,7 @@ def process(connection, config, metadata):
                                                                 [gradz_lb, gradz_ub]]}}
         scanner_coil = ScannerCoil(nii_fmap.shape[:3], nii_fmap.affine, constraints=st_scanner_constraints, orders=(0, 1),
                                    manufacturer="Siemens", isocenter=isocenter)
-        nii_coil =nib.Nifti1Image(scanner_coil.profile, nii_fmap.affine, header=nii_fmap.header)
+        nii_coil = nib.Nifti1Image(scanner_coil.profile, nii_fmap.affine, header=nii_fmap.header)
         nii_orig_coil_profiles = nii_coil
         nii_coil_profiles = nii_orig_coil_profiles
         # resample_from_to(nii_orig_coil_profiles, nii_fmap,  order=1, mode='grid-constant',  cval=0)

@@ -136,6 +136,7 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
     if len(fnames_phases) < 2:
         raise FileNotFoundError("Could not find at least two phase images with suffix '_phase_echo-1.nii.gz' and '_phase_echo-2.nii.gz' in " + mrd2niiFolder)
 
+    fname_mask_saved = os.path.join(fmapFolder, "saved_mask.nii.gz")
     fname_fmap = os.path.join(fmapFolder, "fieldmap.nii.gz")
     env = os.environ.copy()
     env["FSLOUTPUTTYPE"] = "NIFTI_GZ"
@@ -146,14 +147,27 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
            '--gaussian-filter', mrdhelper.get_json_config_param(config_dict, 'gaussian-filter', default='true'),
            '--sigma', mrdhelper.get_json_config_param(config_dict, 'sigma', default='1'),
             # '--2d', mrdhelper.get_json_config_param(config_dict, '2d', default='false'),
+            '--savemask', fname_mask_saved,
             '-o', fname_fmap]
-    
+
     if use_mask:
         logging.info("Using mask: %s", fname_mask)
-        cmd += ['--mask', fname_mask]
+        dilate_mask = mrdhelper.get_json_config_param(config_dict, 'dilate_mask', default=True, type='bool')
+        if dilate_mask:
+            dilate_mask_kernel_size = mrdhelper.get_json_config_param(config_dict, 'dilate_mask_kernel_size', default='3', type='str')
+            fname_mask_dilated = os.path.join(fmapFolder, "mask_dilated.nii.gz")
+            cmd_dilate = ['st_mask', 'modify-binary-mask', '-i', fname_mask, '-o', fname_mask_dilated, '--operation', 'dilate', '--size', dilate_mask_kernel_size, '--shape', 'sphere']
+            subprocess.run(cmd_dilate,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        check=True)
+            cmd += ['--mask', fname_mask_dilated]
+        else:
+            cmd += ['--mask', fname_mask]
     else:
         logging.info("Using thresholding instead of mask")
-        thr = mrdhelper.get_json_config_param(config_dict, 'threshold', default='0.05')
+        thr = mrdhelper.get_json_config_param(config_dict, 'threshold', default='0.1')
         cmd += ['--threshold', thr]
 
     subprocess.run(cmd,
@@ -296,7 +310,7 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
         dset.append_image("image_%d" % imagesOut[mrd_slice_index].image_series_index, imagesOut[mrd_slice_index])
         if "xml" not in dset.list():
             dset.write_xml_header(mrdHeader.toXML())
-        
+    dset.close()
 
     # Send a copy of original (unmodified) images back too
     if mrdhelper.get_json_config_param(config_dict, 'sendOriginal', default=False, type='bool') == True:
