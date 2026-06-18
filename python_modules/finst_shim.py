@@ -206,16 +206,3 @@ def best_idx_to_scanner_shim(fname_shim_file, fname_best_indexes, fname_output):
             ]
             row_str = ' | '.join(row_cells)
             f.write(row_str + '\n')
-
-
-def create_debug_save_file():
-    # Create savedata folder, if necessary
-    if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
-
-    mrdFilePath = os.path.join(debugFolder, "MRD_output_" + datetime.now().strftime("%Y-%m-%d-%H%M%S" + "_" + str(random.randint(0,100)) + ".h5"))
-
-    # Create HDF5 file to store incoming MRD data
-    logging.info("Incoming data will be saved to: '%s' in group '%s'", mrdFilePath, "dataset")
-    dset = ismrmrd.Dataset(mrdFilePath, "dataset")
-    return dset

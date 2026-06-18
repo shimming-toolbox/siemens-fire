@@ -3,6 +3,7 @@
 
 from datetime import datetime
 from multiprocessing import connection
+import h5py
 import ismrmrd
 import os
 import logging
@@ -307,9 +308,10 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
         shutil.copyfile(fname_fmap, os.path.join(dataFolder, "fieldmap.nii.gz"))
 
         # Debug output
-        dset.append_image("image_%d" % imagesOut[mrd_slice_index].image_series_index, imagesOut[mrd_slice_index])
         if "xml" not in dset.list():
             dset.write_xml_header(mrdHeader.toXML())
+        dset.append_image("image_%d" % imagesOut[mrd_slice_index].image_series_index, imagesOut[mrd_slice_index])
+
     dset.close()
 
     # Send a copy of original (unmodified) images back too
@@ -355,4 +357,5 @@ def create_debug_save_file():
     # Create HDF5 file to store incoming MRD data
     logging.info("Incoming data will be saved to: '%s' in group '%s'", mrdFilePath, "dataset")
     dset = ismrmrd.Dataset(mrdFilePath, "dataset")
+    dset._file.require_group("dataset")
     return dset

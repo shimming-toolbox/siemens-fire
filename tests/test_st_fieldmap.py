@@ -6,7 +6,7 @@ from ismrmrd import Dataset
 import h5py
 import nibabel as nib
 import numpy as np
-import inspect
+import glob
 
 from python_modules import __PATH_TESTING_DATA__, __PATH_REPO__, __TMP_SHARE_DEBUG__, __TMP_SHARE_SAVEDDATA__
 from . import DEBUG
@@ -14,10 +14,8 @@ from . import DEBUG
 
 
 def test_st_fieldmap_use_mask(tmpdir):
-    """Verify that the client can query endpoints on the background server process."""
-
     # Copy mask into saved_data folder
-    fname_mask = os.path.join(__PATH_TESTING_DATA__, "gre_fmap_baseline_mask.nii.gz")
+    fname_mask = os.path.join(__PATH_TESTING_DATA__, "gre_mask.nii.gz")
     shutil.copy(fname_mask, os.path.join(__TMP_SHARE_SAVEDDATA__, "mask.nii.gz"))
 
     fname_logfile = os.path.join(__PATH_TESTING_DATA__, "client.log")
@@ -27,7 +25,6 @@ def test_st_fieldmap_use_mask(tmpdir):
     config = {
         "version": "1.0",
         "parameters": {
-            "config": "st_fieldmap",
             "unwrapper": "prelude",
             "gaussian-filter": "True",
             "sigma": "1",
@@ -37,7 +34,7 @@ def test_st_fieldmap_use_mask(tmpdir):
         }
     }
 
-    fname_input = os.path.join(__PATH_TESTING_DATA__, "gre_fmap_baseline_tra_rot_2025-10-07-223140_89.h5")
+    fname_input = os.path.join(__PATH_TESTING_DATA__, "gre_tra_rot_2025-10-07-223140_89.h5")
     dset = Dataset(fname_input)
     dsetConfigAdditional = dset._dataset.require_dataset('configAdditional',shape=(1,), dtype=h5py.special_dtype(vlen=bytes))
     dsetConfigAdditional[0] = bytes(json.dumps(config), 'utf-8')
@@ -55,21 +52,11 @@ def test_st_fieldmap_use_mask(tmpdir):
          check=True,
     )
 
-    print(ret)
     assert os.path.exists(tmpdir / "output.mrd")
     assert ret.returncode == 0
 
     fname_fieldmap = os.path.join(__TMP_SHARE_SAVEDDATA__, "fieldmap.nii.gz")
     assert os.path.exists(fname_fieldmap)
-
-    # Todo: Make sure mrd2nii can be run on the output, and compare it to the fieldmap
-    # subprocess.run(['mrd2nii',
-    #                 '-i', tmpdir / "output.mrd",
-    #                 '-o', tmpdir / "output.nii.gz"],
-    #                 check=True)
-    
-    # nii = nib.load(tmpdir / "output.nii.gz")
-    # print(f"Output NIfTI shape: {nii.shape}")
 
     fname_saved_mask = os.path.join(__TMP_SHARE_DEBUG__, "st_fieldmap", "saved_mask.nii.gz")
     assert os.path.exists(fname_saved_mask)
@@ -78,7 +65,7 @@ def test_st_fieldmap_use_mask(tmpdir):
     nii_mask = nib.load(fname_mask)
     assert nii_saved_mask.shape == nii_mask.shape
     assert np.allclose(nii_saved_mask.get_fdata(), nii_mask.get_fdata())
-
+    
     fname_expected_fmap = os.path.join(__PATH_TESTING_DATA__, "test_st_fieldmap_use_mask", "fieldmap.nii.gz")
     fname_expected_json = os.path.join(__PATH_TESTING_DATA__, "test_st_fieldmap_use_mask", "fieldmap.json")
     assert os.path.exists(fname_expected_fmap)
@@ -88,6 +75,14 @@ def test_st_fieldmap_use_mask(tmpdir):
     nii_computed_fmap = nib.load(fname_computed_fmap)
     assert nii_computed_fmap.shape == nii_expected_fmap.shape
     assert np.allclose(nii_computed_fmap.get_fdata(), nii_expected_fmap.get_fdata())
+    subprocess.run(['mrd2nii',
+                    '-i', glob.glob(os.path.join(__TMP_SHARE_DEBUG__, "MRD_output_*.h5"))[0],
+                    '-o', tmpdir],
+                    check=True)
+    fname_nii_output = glob.glob(os.path.join(tmpdir, "*.nii.gz"))[0]
+    nii_mrd_output = nib.load(fname_nii_output)
+    assert nii_mrd_output.shape == nii_expected_fmap.shape
+    assert np.allclose(nii_mrd_output.get_fdata(), nii_expected_fmap.get_fdata(), atol=1.0)
 
     if DEBUG:
         path_debug = os.path.join(__PATH_REPO__, "data", "debug")
@@ -95,13 +90,12 @@ def test_st_fieldmap_use_mask(tmpdir):
             shutil.rmtree(path_debug)
         shutil.copytree(__TMP_SHARE_SAVEDDATA__, path_debug, dirs_exist_ok=True)
         shutil.copy(fname_saved_mask, os.path.join(path_debug, "saved_mask.nii.gz"))
+        shutil.copy(fname_nii_output, os.path.join(path_debug, "mrd_output.nii.gz"))
 
 
 def test_st_fieldmap_use_mask_dilate(tmpdir):
-    """Verify that the client can query endpoints on the background server process."""
-
     # Copy mask into saved_data folder
-    fname_mask = os.path.join(__PATH_TESTING_DATA__, "gre_fmap_baseline_mask.nii.gz")
+    fname_mask = os.path.join(__PATH_TESTING_DATA__, "gre_mask.nii.gz")
     shutil.copy(fname_mask, os.path.join(__TMP_SHARE_SAVEDDATA__, "mask.nii.gz"))
 
     fname_logfile = os.path.join(__PATH_TESTING_DATA__, "client.log")
@@ -111,7 +105,6 @@ def test_st_fieldmap_use_mask_dilate(tmpdir):
     config = {
         "version": "1.0",
         "parameters": {
-            "config": "st_fieldmap",
             "unwrapper": "prelude",
             "gaussian-filter": "True",
             "sigma": "1",
@@ -121,7 +114,7 @@ def test_st_fieldmap_use_mask_dilate(tmpdir):
         }
     }
 
-    fname_input = os.path.join(__PATH_TESTING_DATA__, "gre_fmap_baseline_tra_rot_2025-10-07-223140_89.h5")
+    fname_input = os.path.join(__PATH_TESTING_DATA__, "gre_tra_rot_2025-10-07-223140_89.h5")
     dset = Dataset(fname_input)
     dsetConfigAdditional = dset._dataset.require_dataset('configAdditional',shape=(1,), dtype=h5py.special_dtype(vlen=bytes))
     dsetConfigAdditional[0] = bytes(json.dumps(config), 'utf-8')
@@ -139,21 +132,11 @@ def test_st_fieldmap_use_mask_dilate(tmpdir):
          check=True,
     )
 
-    print(ret)
     assert os.path.exists(tmpdir / "output.mrd")
     assert ret.returncode == 0
 
     fname_fieldmap = os.path.join(__TMP_SHARE_SAVEDDATA__, "fieldmap.nii.gz")
     assert os.path.exists(fname_fieldmap)
-
-    # Todo: Make sure mrd2nii can be run on the output, and compare it to the fieldmap
-    # subprocess.run(['mrd2nii',
-    #                 '-i', tmpdir / "output.mrd",
-    #                 '-o', tmpdir / "output.nii.gz"],
-    #                 check=True)
-    
-    # nii = nib.load(tmpdir / "output.nii.gz")
-    # print(f"Output NIfTI shape: {nii.shape}")
 
     fname_saved_mask = os.path.join(__TMP_SHARE_DEBUG__, "st_fieldmap", "saved_mask.nii.gz")
     assert os.path.exists(fname_saved_mask)
@@ -173,6 +156,14 @@ def test_st_fieldmap_use_mask_dilate(tmpdir):
     nii_computed_fmap = nib.load(fname_computed_fmap)
     assert nii_computed_fmap.shape == nii_expected_fmap.shape
     assert np.allclose(nii_computed_fmap.get_fdata(), nii_expected_fmap.get_fdata())
+    subprocess.run(['mrd2nii',
+                    '-i', glob.glob(os.path.join(__TMP_SHARE_DEBUG__, "MRD_output_*.h5"))[0],
+                    '-o', tmpdir],
+                    check=True)
+    fname_nii_output = glob.glob(os.path.join(tmpdir, "*.nii.gz"))[0]
+    nii_mrd_output = nib.load(fname_nii_output)
+    assert nii_mrd_output.shape == nii_expected_fmap.shape
+    assert np.allclose(nii_mrd_output.get_fdata(), nii_expected_fmap.get_fdata(), atol=1.0)
 
     if DEBUG:
         path_debug = os.path.join(__PATH_REPO__, "data", "debug")
@@ -180,3 +171,4 @@ def test_st_fieldmap_use_mask_dilate(tmpdir):
             shutil.rmtree(path_debug)
         shutil.copytree(__TMP_SHARE_SAVEDDATA__, path_debug, dirs_exist_ok=True)
         shutil.copy(fname_saved_mask, os.path.join(path_debug, "saved_mask.nii.gz"))
+        shutil.copy(fname_nii_output, os.path.join(path_debug, "mrd_output.nii.gz"))
