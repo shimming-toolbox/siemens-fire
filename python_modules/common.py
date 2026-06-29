@@ -1,14 +1,11 @@
 import ismrmrd
 import numpy as np
-import mrd_flags
 import itertools
+from ismrmrd import constants
 
 EXCLUSION_FLAGS = [
-    "ISMRMRD_ACQ_IS_NOISE_MEASUREMENT",
-#    "ISMRMRD_ACQ_IS_PARALLEL_CALIBRATION",
-#    "ISMRMRD_ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING",
-#    "ISMRMRD_ACQ_IS_PHASE_STABILIZATION",
-    "ISMRMRD_ACQ_IS_PHASE_STABILIZATION_REFERENCE",
+    constants.ACQ_IS_NOISE_MEASUREMENT,
+    constants.ACQ_IS_PHASE_STABILIZATION_REFERENCE
 ]
 
 KSPACE_LAYOUT = [
@@ -139,10 +136,10 @@ class SiemensRAW:
         first_dims = [get_dim(d) for d in KSPACE_LAYOUT]
 
         return tuple(first_dims + [nx, n_coils])
-
+    
     def _check_for_flags(self, acq: ismrmrd.Acquisition) -> bool:
         for f in EXCLUSION_FLAGS:
-            if acq.is_flag_set(mrd_flags.flags[f]):
+            if acq.is_flag_set(f):   # f is now the integer value directly, not a string key
                 return False
         return True
     
