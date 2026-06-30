@@ -290,6 +290,8 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
         
         fname_output_mask_nii = os.path.join(debugFolder, 'mask_bet.nii.gz')
         if head[0].repetition == 0:
+            env = os.environ.copy()
+            env["FSLOUTPUTTYPE"] = "NIFTI_GZ"
             subprocess.run(['/root/shimming-toolbox/python/bin/bet2',
                             fname_input_nii,
                             os.path.join(debugFolder, 'tmp'),
@@ -297,6 +299,7 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
                             '-g', mrdhelper.get_json_config_param(config_dict, 'bet_g', default='0'),
                             '-m',
                             '-n'],
+                            env=env,
                             check=True)
             os.rename(os.path.join(debugFolder, 'tmp_mask.nii.gz'), fname_output_mask_nii)
             output_mask_nii = nib.load(fname_output_mask_nii)
