@@ -1,4 +1,10 @@
+# Python cache files and IDE settings
+*.egg-info/
+**/__pycache__/
+.vscode
+
 # OS-related files/folders
 .DS_Store
 
 data/
+testing_data/

@@ -1,6 +1,8 @@
 {
     "version": "1.0",
     "parameters": {
-        "use_already_computed_mask": "False"
+        "use_already_computed_mask": "False",
+        "Comment: if use_already_computed_mask is True": "Use the share/saveddata/mask.nii.gz as the mask",
+        "Comment: if use_already_computed_mask is False": "Compute the mask using sct_deepseg spinalcord"
     }
 }

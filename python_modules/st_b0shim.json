@@ -2,11 +2,26 @@
     "version": "1.0",
     "parameters": {
         "shim_method": "slicewise",
+        "Comment: Allowed shim_method options": ["slicewise", "volume"],
+        
         "scanner-coil-order": "0,1",
+        "Comment: scanner-coil-order": "Comma-separated list of coil indices",
+        "Comment: scanner-coil-order if shim_method is volume": "Output file format will be chronological-coil and needs to be manually input using AdjValidate or using the Manual Adjustment card.",
+        "Comment: scanner-coil-order if shim_method is slicewise": "Output file format will be slicewise-hrd and can directly be read by a supported slicewise shim sequence. Shim orders need to be 0 and/or 1.",
+
         "optimizer-method": "pseudo_inverse",
+        "Comment: Allowed optimizer-method options": ["pseudo_inverse", "least_squares", "quad_prog", "bfgs"],
+
         "optimizer-criteria": "rmse",
+        "Comment: Allowed optimizer-criteria options": ["rmse", "mse", "mae", "grad", "pseudo_huber"],
+        
         "regularization-factor": "0.1",
+        "Comment: regularization-factor": "Regularization factor for the optimization problem. Higher values will favour lower shim currents at the expense of shim quality.",
+
         "weighting-signal-loss": "10",
-        "mask-dilation-kernel-size": "5"
+        "Comment: weighting-signal-loss": "Weighting factor for the signal loss term in the optimization problem. Recommendation: rmse: 10, mse: 0.01.",
+
+        "mask-dilation-kernel-size": "5",
+        "Comment: mask-dilation-kernel-size": "Kernel size for the dilation of the mask. Useful to ensure the shimmed region is large enough in the through slice direction when slicewise shimming."
     }
 }

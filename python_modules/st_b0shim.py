@@ -2,6 +2,7 @@
 # Source: https://github.com/kspaceKelvin/python-ismrmrd-server
 
 from datetime import datetime
+import glob
 from multiprocessing import connection
 import ismrmrd
 import os
@@ -123,8 +124,15 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
         raise ValueError("Invalid shim method: " + slices_option)
     if slices_option == 'slicewise':
         slices_option = 'auto'
+    
+    if slices_option == 'auto':
+        output_file_format_scanner = 'slicewise-hrd'
+    elif slices_option == 'volume':
+        output_file_format_scanner = 'chronological-coil'
+    else:
+        raise ValueError("Unreachable: Invalid shim method: " + slices_option)
 
-    subprocess.run(['st_b0shim', 'dynamic',
+    ret = subprocess.run(['st_b0shim', 'dynamic',
                     '--fmap', fname_fmap,
                     '--target', fname_mag,
                     '--mask', fname_mask,
@@ -135,11 +143,19 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
                     '--regularization-factor', str(mrdhelper.get_json_config_param(config_dict, 'regularization-factor', default=0.1, type='float')),
                     '--weighting-signal-loss', str(mrdhelper.get_json_config_param(config_dict, 'weighting-signal-loss', default=10, type='float')),
                     '--mask-dilation-kernel-size', str(mrdhelper.get_json_config_param(config_dict, 'mask-dilation-kernel-size', default=5, type='int')),
-                    '--output-file-format-scanner', 'slicewise-hrd',
+                    '--output-file-format-scanner', output_file_format_scanner,
                     '-o', b0shimFolder],
                     check=True)
+    
+    if ret.returncode != 0:
+        raise RuntimeError(f"st_b0shim failed with return code: {ret.returncode}. stdout: {ret.stdout}, stderr: {ret.stderr}")
 
-    shutil.copyfile(os.path.join(b0shimFolder, "scanner_shim.txt"), os.path.join(dataFolder, "scanner_shim.txt"))
+    if slices_option == 'auto':
+        shutil.copyfile(os.path.join(b0shimFolder, "scanner_shim.txt"), os.path.join(dataFolder, "scanner_shim.txt"))
+    elif slices_option == 'volume':
+        shutil.copyfile(glob.glob(os.path.join(b0shimFolder, "coefs_*.txt"))[0], os.path.join(dataFolder, "scanner_shim.txt"))
+    else:
+        raise ValueError("Unreachable: Invalid shim method: " + slices_option)
 
     return
 

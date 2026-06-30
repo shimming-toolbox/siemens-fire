@@ -2,8 +2,18 @@
     "version": "1.0",
     "parameters": {
         "channels_to_shim": "fxyz",
+        "Comment: Allowed channels_to_shim options": "Any combination of f, x, y, z. For example: fxyz, fx, fyz, etc.",
+
         "objective": "Sig int + mi",
+        "Comment: Allowed objective options": "+ separated string using any combination of: Sig int, mi, fmap",
+        "Comment: Sig int": "Signal intensity term in the objective function. This term maximizes the signal intensity in the masked region.",
+        "Comment: mi": "Mutual information term in the objective function. This term maximizes the mutual information between share/saveddata/anat.nii.gz and the shimmed image.",
+        "Comment: fmap": "Fieldmap term in the objective function. This term uses share/saveddata/fieldmap.nii.gz as a hard constraint based on maximum field offset.",
+        
         "use_surrogate": "False",
-        "use_f0_offset_from_gradients": "True"
+        "Comment: use_surrogate": "If True, use a surrogate model using share/saveddata/fieldmap.nii.gz to order the shim currents to try.",
+
+        "use_f0_offset_from_gradients": "True",
+        "Comment: use_f0_offset_from_gradients": "If True, compute f0 offset from the gradient and account for it when applying the shim currents. This allows to use fxyz constraints that are closer to 0, effectively shimming as if each slice is at isocenter."
     }
 }

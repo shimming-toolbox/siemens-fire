@@ -2,13 +2,27 @@
     "version": "1.0",
     "parameters": {
         "method": "sct_prop",
+        "Comment: Allowed method options": ["sct_propseg", "sct_deepseg", "bet", "threshold"],
+
         "threshold_thr": "0.1",
+        "Comment: threshold_thr": "Threshold for the thresholding method. Not used if method is not 'threshold'. Range: [0, 1]",
+
         "sct_deepseg_create_circular_mask": "True",
+        "Comment: sct_deepseg_create_circular_mask": "If sct_deepseg is True and sct_deepseg_create_circular_mask is True, create a circular mask around the SC centerline.",
         "sct_deepseg_mask_size": "20",
+        "Comment: sct_deepseg_mask_size": "If sct_deepseg is True and sct_deepseg_create_circular_mask is True, create a circular mask around the SC centerline with this radius (in mm).",
+        
         "sct_propseg_contrast": "t2s",
+        "Comment: sct_propseg_contrast": "Contrast for the sct_propseg method. Not used if method is not 'sct_propseg'.",
         "sct_propseg_include_csf": "True",
+        "Comment: sct_propseg_include_csf": "If True, include CSF in the segmentation. Not used if method is not 'sct_propseg'.",
+        
         "sendOriginal": "False",
+        "Comment: sendOriginal": "If True, send the original image to the server as well.",
+
         "bet_f": "0.5",
-        "bet_g": "0.0"
+        "Comment: bet_f": "Fractional intensity threshold (0->1) smaller values give larger brain outline estimates. Not used if method is not 'bet'.",
+        "bet_g": "0.0",
+        "Comment: bet_g": "Vertical gradient in fractional intensity threshold (-1->1) positive values give larger brain outline at bottom of brain. Not used if method is not 'bet'."
     }
 }
