@@ -2,15 +2,22 @@
     "version": "1.0",
     "parameters": {
         "unwrapper": "prelude",
+        "Comment: Allowed unwrapper options": ["prelude", "skimage"],
+
         "gaussian-filter": "True",
+        "Comment: gaussian-filter": "Apply Gaussian filter to the fieldmap",
         "sigma": "1",
+        "Comment: sigma": "Standard deviation for the Gaussian filter. Not used if gaussian-filter is False.",
 
         "use_mask": "True",
-        "comment_if_use_mask_is_True": "Use the provided mask, allow to dilate the mask if needed",
+        "Comment: if use_mask is True": "Use the share/saveddata/mask.nii.gz as the mask",
+        "Comment: if use_mask is False": "Threshold the magnitude image. See 'threshold' parameter.",
         "dilate_mask": "True",
+        "Comment: dilate_mask": "If use_mask is True and dilate_mask is True, dilate the mask. Useful to make sure the fieldmap ROI is larger than the shim ROI.",
         "dilate_mask_kernel_size": "3",
-
-        "comment_if_use_mask_is_False": "Using thresholding instead of mask",
-        "threshold": "0.05"
+        "Comment: dilate_mask_kernel_size": "Kernel size for the dilation of the mask. Not used if dilate_mask is False.",
+        
+        "threshold": "0.05",
+        "Comment: threshold": "Threshold for the magnitude image. Not used if use_mask is True."
     }
 }
