@@ -14,6 +14,6 @@
         "Comment: use_surrogate": "If True, use a surrogate model using share/saveddata/fieldmap.nii.gz to order the shim currents to try.",
 
         "use_f0_offset_from_gradients": "True",
-        "Comment: use_f0_offset_from_gradients": "If True, compute f0 offset from the gradient and account for it when applying the shim currents. This allows to use fxyz constraints that are closer to 0, effectively shimming as if wach slice is at isocenter."
+        "Comment: use_f0_offset_from_gradients": "If True, compute f0 offset from the gradient and account for it when applying the shim currents. This allows to use fxyz constraints that are closer to 0, effectively shimming as if each slice is at isocenter."
     }
 }
