@@ -130,7 +130,16 @@ def process_raw(raw, mrdHeader):
                             ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.y), 
                             ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.z))
 
-    ismrmrd_images = convert_to_ismrmrd_images(corrected, raw.acquisitions[0].getHead(), field_of_view)
+    header_map = {}
+    for acq in raw.acquisitions:
+        key = (acq.idx.contrast, acq.idx.slice)
+        if key not in header_map:
+            header_map[key] = acq.getHead()
+    acq_headers = [header_map[(c, s)] for c in range(4) for s in range(15)]
+    for i, h in enumerate(acq_headers):
+        print(f"Image {i}: contrast={h.idx.contrast}, slice={h.idx.slice}")
+    ismrmrd_images = convert_to_ismrmrd_images(corrected, acq_headers, field_of_view)
+    
     print("Sending images...")
     return ismrmrd_images
 
@@ -140,29 +149,21 @@ def mag_images(images):
 def convert_float64_to_int16(data):
     return np.around(data * (2**12 - 1)/data.max()).astype(np.int16)
 
-def convert_to_ismrmrd_images(images, acq_header, fov):
+def convert_to_ismrmrd_images(images, acq_headers, fov):
     images_out = []
-    
     *_, y, x = images.shape
-
     data = convert_float64_to_int16(images)
-
     for i, img in enumerate(data.reshape(-1, y, x)):
         ismrmrd_image = ismrmrd.Image.from_array(img, transpose=False)
-        ismrmrd_image.setHead(mrdhelper.update_img_header_from_raw(ismrmrd_image.getHead(), acq_header))
+        ismrmrd_image.setHead(mrdhelper.update_img_header_from_raw(ismrmrd_image.getHead(), acq_headers[i]))
         ismrmrd_image.field_of_view = fov
         ismrmrd_image.image_index = i
-
-        # Set ISMRMRD Meta Attributes
         tmp_meta = ismrmrd.Meta()
         tmp_meta['DataRole']               = 'Image'
         tmp_meta['ImageProcessingHistory'] = ['FIRE', 'PYTHON']
         tmp_meta['Keep_image_geometry']    = 1
-
         ismrmrd_image.attribute_string = tmp_meta.serialize()
-
         images_out.append(ismrmrd_image)
-    
     return images_out
 
 def raw_to_image(raw):
