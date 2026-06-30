@@ -2,6 +2,7 @@ import ismrmrd
 import numpy as np
 import itertools
 from ismrmrd import constants
+from collections import defaultdict
 
 EXCLUSION_FLAGS = [
     constants.ACQ_IS_NOISE_MEASUREMENT,
@@ -35,12 +36,15 @@ class SiemensRAW:
         #self.dset = ismrmrd.Dataset(filename, "dataset")
         self.header = mrd_header
         #self.n_acq = self.dset.number_of_acquisitions()
+        n_echo = mrd_header.encoding[0].encodingLimits.contrast.maximum + 1
 
         self.acquisitions: list[ismrmrd.Acquisition] = []
         self.acs_mask = None # assuming they are the same for every raw kspace
         self.kspace = None
         self.navigator = None
         self.noise = None
+
+        self.navigator_detector = NavigatorDetector(n_echo)
 
     def reconstruct_images():
         pass
@@ -105,7 +109,7 @@ class SiemensRAW:
                 raise IndexError(f"Index already filled: {idx}")
             used_idx.add(idx)
 
-            if acq.idx.contrast == 0 and acq.scan_counter % 5 == 1: # TODO: double check for every repetition
+            if self.navigator_detector.is_nav(acq):
                 navigator[*idx, :, :] = data
             else:
                 kspace[*idx, :, :] = data
@@ -145,5 +149,62 @@ class SiemensRAW:
     
     def _is_acq_reverse(self, acq: ismrmrd.Acquisition):
         return acq.is_flag_set(ismrmrd.ACQ_IS_REVERSE)
+    
+# Navigator line detection for the following sequence RF-E1-E2-E3-E4-NAV
+class NavigatorDetector:
+    """
+    Detects navigator acquisitions based on their position within the shot cycle.
+
+    The sequence structure is fixed : RF - E1 - E2 - E3 - E4 - NAV
+    meaning for every group of (nEcho + 1) acquisitions sharing the same
+    (slice, repetition), the last one is the navigator.
+
+    This position-based detection is used because the navigator acquisition
+    does not carry a dedicated ISMRMRD flag in this sequence. It is identified
+    purely by its index within the shot cycle.
+
+    The counter is maintained per (slice, repetition) key because acquisitions
+    from different slices are interleaved in the dataset and must be tracked independently.
+    """
+    def __init__(self, n_echo):
+        self.n_echo = n_echo # Number of echoes per shot: defines the cycle length (n_echo + 1)
+        self.counter = defaultdict(int) # Per(slice, rep) acquisition counter: tracks position within the shot cycle
+        self.nav_per_slice = defaultdict(int)
+
+    def is_nav(self, acq):
+        """
+        Determine whether an acquisition is a navigator based on its position
+        in the shot cycle for its (slice, repetition) group.
+
+        Shot cycle for n_echo=4 :
+            counter mod 5 == 0 → echo 1  (imaging)
+            counter mod 5 == 1 → echo 2  (imaging)
+            counter mod 5 == 2 → echo 3  (imaging)
+            counter mod 5 == 3 → echo 4  (imaging)
+            counter mod 5 == 4 → NAV     (navigator)  ← (counter - 1) % 5 == 4 == n_echo
+
+        Parameters
+        ----------
+        acq (ismrmrd.Acquisition): Acquisition object to classify.
+
+        Returns
+        -------
+        (bool): True if this acquisition is the navigator of its shot, False if imaging echo.
+        """
+        # Group acquisitions by (slice, repetition): each group has its own cycle counter
+        sl = acq.idx.slice
+        rep = acq.idx.repetition
+        key = (sl, rep)
+
+        # Increment counter BEFORE the modulo check, then use (counter - 1) so that
+        # the first acquisition of a group (counter=1) maps to position 0 in the cycle
+        self.counter[key] += 1
+
+        # Navigator is at position n_echo in the 0-based cycle (last of each n_echo+1 group)
+        if (self.counter[key] - 1) % (self.n_echo + 1) == self.n_echo:
+            self.nav_per_slice[sl] += 1
+            return True
+
+        return False
 
         
