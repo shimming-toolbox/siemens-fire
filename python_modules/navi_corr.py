@@ -15,6 +15,9 @@ import constants
 from time import perf_counter
 from pygrappa import grappa
 from tempfile import mkdtemp
+from pathlib import Path
+import nibabel as nib
+import pandas as pd
 
 from common import SiemensRAW
 
@@ -68,6 +71,253 @@ def process(connection, config, mrdHeader):
     finally:
         connection.send_close()
 
+def build_reference_volume(kspace, acs_mask, mrdHeader, output_dir, raw):
+    """
+    Reconstruct reference volume from echo 0 and save as NIfTI.
+    Slices are stored in anatomical order (inf→sup) for SCT centerline detection.
+
+    Parameters
+    ----------
+    kspace    : (1, 1, 1, 1, nEcho, nSlice, 1, nKy, nKx, nCoils)
+    acs_mask  : same shape as kspace
+    mrdHeader : ISMRMRD header
+    output_dir : Path — where to save the NIfTI
+    raw        : SiemensRAW object — needed to extract physical slice positions
+
+    Returns
+    -------
+    ref_path : Path — path to saved NIfTI, or None if failed
+    """
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ref_path = output_dir / "ref_echo0.nii.gz"
+
+    if ref_path.exists():
+        print(f"Reference volume already present : {ref_path}")
+        return ref_path
+
+    print("Building reference volume from echo 0...")
+
+    nSlice    = kspace.shape[5]
+    nKy       = kspace.shape[7]
+    enc       = mrdHeader.encoding[0]
+    fov_x     = enc.reconSpace.fieldOfView_mm.x
+    fov_y     = enc.reconSpace.fieldOfView_mm.y
+    nKx_recon = enc.reconSpace.matrixSize.x
+    pixel_size_x = fov_x / nKx_recon
+    pixel_size_y = fov_y / nKy
+    # dz           = enc.reconSpace.fieldOfView_mm.z / nSlice \
+    #                if enc.reconSpace.fieldOfView_mm.z > 0 else 5.0
+
+    # --------------------------------------------------
+    # GRAPPA RECONSTRUCTION ON ECHO 0
+    # --------------------------------------------------
+    kspace_ec0   = kspace[:, :, :, :, [0], :, :, :, :, :]
+    acs_mask_ec0 = acs_mask[:, :, :, :, [0], :, :, :, :, :]
+
+    # squeeze (rep, phase, set, segment, echo, kz) → (nSlice, nKy, nKx, nCoils)
+    squeeze_axes = (0, 1, 2, 3, 4, 6)
+    kspace_sq    = np.squeeze(kspace_ec0,   axis=squeeze_axes)
+    acs_mask_sq  = np.squeeze(acs_mask_ec0, axis=squeeze_axes)
+
+    print(f"  kspace_sq.shape : {kspace_sq.shape}")
+
+    kspace_grappa = grappa_reconstruction(kspace_sq, kspace_sq * acs_mask_sq)
+    print(f"  kspace_grappa.shape : {kspace_grappa.shape}")
+
+    # Restore to (rep=1, echo=1, slice, y, x, coils) for raw_to_image
+    kspace_restored = kspace_grappa[np.newaxis, np.newaxis, :, :, :, :]
+    print(f"  kspace_restored.shape : {kspace_restored.shape}")
+
+    images = raw_to_image(kspace_restored)
+    images = mag_images(images)
+    print(f"  images.shape : {images.shape}")
+
+    # images : (1, 1, nSlice, nKy_recon, nKx_recon)
+    images_slices = images[0, 0]   # (nSlice, nKy_recon, nKx_recon)
+    print(f"  images_slices.shape : {images_slices.shape}")
+
+    nKy_recon  = images_slices.shape[1]
+    nKx_recon_ = images_slices.shape[2]
+
+    # Crop parameters
+    CROP_SIZE = 150
+    CROP_HALF = CROP_SIZE // 2
+    cx    = nKx_recon_ // 2
+    cy    = nKy_recon  // 2
+    x_lo  = cx - CROP_HALF
+    y_lo  = cy - CROP_HALF
+
+    # --------------------------------------------------
+    # GET PHYSICAL SLICE POSITIONS → ANATOMICAL ORDER
+    # --------------------------------------------------
+    slice_z_positions = {}
+    for acq in raw.acquisitions:
+        sl = acq.idx.slice
+        if sl not in slice_z_positions:
+            slice_z_positions[sl] = acq.position[2]
+
+    sorted_sl_indices = sorted(
+        slice_z_positions.keys(),
+        key=lambda sl: slice_z_positions[sl]
+    )
+
+    print(f"\n  Anatomical slice order :")
+    for anat_idx, sl in enumerate(sorted_sl_indices):
+        print(f"    anat[{anat_idx}] = ISMRMRD sl={sl}  "
+              f"z={slice_z_positions[sl]:.2f} mm")
+
+    # --------------------------------------------------
+    # FILL ref_volume IN ANATOMICAL ORDER
+    # --------------------------------------------------
+    n_sorted   = len(sorted_sl_indices)
+    ref_volume = np.zeros((n_sorted, CROP_SIZE, CROP_SIZE), dtype=np.float32)
+
+    for anat_idx, sl in enumerate(sorted_sl_indices):
+        if sl >= images_slices.shape[0]:
+            print(f"    WARNING : sl={sl} out of bounds")
+            continue
+
+        img_sl = images_slices[sl]               # (nKy_recon, nKx_recon)
+        img_sl = img_sl / (img_sl.max() + 1e-8)  # normalize to [0,1]
+        ref_volume[anat_idx] = img_sl[
+            y_lo : y_lo + CROP_SIZE,
+            x_lo : x_lo + CROP_SIZE
+        ]
+        
+        # dz from physical slice positions — more reliable than FOV z / nSlice
+        # which gives slice thickness (5mm) not slice spacing
+        if len(sorted_sl_indices) > 1:
+            z0 = slice_z_positions[sorted_sl_indices[0]]
+            z1 = slice_z_positions[sorted_sl_indices[1]]
+            dz = abs(z1 - z0)
+        else:
+            dz = 5.0   # fallback
+
+        print(f"  dz from slice positions : {dz:.4f} mm")
+
+    # --------------------------------------------------
+    # FLIP y + SIMPLE DIAGONAL AFFINE (MRINavigator.jl convention)
+    # y flip : SCT expects y=0 at top (radiological convention)
+    # affine : voxel sizes only, no patient orientation
+    # --------------------------------------------------
+    ref_volume_flipped = ref_volume[:, ::-1, :]
+    affine = np.diag([-pixel_size_x, pixel_size_y, dz, 1.0]).astype(np.float32)
+
+    nii = nib.Nifti1Image(ref_volume_flipped.T, affine)
+    nib.save(nii, str(ref_path))
+
+    print(f"\nReference volume saved : {ref_path}")
+    print(f"  shape={ref_volume.shape}  "
+          f"range=[{ref_volume.min():.4f}, {ref_volume.max():.4f}]")
+
+    return ref_path
+
+
+def run_sct_centerline(output_dir, nKy, nKx_recon, nSlice):
+    """
+    Run sct_get_centerline on the reference volume and save the centerline CSV.
+    Called after build_reference_volume() to detect the spinal cord centerline.
+
+    Parameters
+    ----------
+    output_dir : Path — directory containing ref_echo0.nii.gz
+
+    Returns
+    -------
+    csv_path : Path — path to centerline CSV, or None if SCT failed
+    """
+    import subprocess
+
+    output_dir  = Path(output_dir)
+    ref_path    = output_dir / "ref_echo0.nii.gz"
+    cl_nii_path = output_dir / "ref_echo0_centerline.nii.gz"
+    csv_path    = output_dir / "ref_echo0_centerline.csv"
+
+    if csv_path.exists():
+        print(f"Centerline CSV already present : {csv_path}")
+        return csv_path
+
+    if not ref_path.exists():
+        print(f"ERROR : reference volume not found : {ref_path}")
+        return None
+
+    print(f"Running sct_get_centerline -c t2s ...")
+    print(f"  Input  : {ref_path}")
+    print(f"  Output : {cl_nii_path}")
+
+    result = subprocess.run(
+        [
+            "sct_get_centerline",
+            "-i", str(ref_path.resolve()),
+            "-c", "t2s",
+            "-o", str(cl_nii_path.resolve()),
+        ],
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0:
+        print("SCT failed — check SCT installation and PATH")
+        return None
+    
+    # Find SCT output CSV
+    sct_csv = output_dir / "ref_echo0_centerline.csv"
+
+    if not sct_csv.exists():
+        # SCT sometimes appends _centerline to the output name
+        sct_csv = output_dir / "ref_echo0_centerline_centerline.csv"
+
+    if not sct_csv.exists():
+        print(f"SCT CSV not found. Files in output_dir :")
+        for f in output_dir.glob("*"):
+            print(f"  {f.name}")
+        return None
+
+    # # Print raw SCT output for verification
+    df = pd.read_csv(sct_csv, header=None, names=["x", "y", "z"])
+    print(f"\nRaw SCT output ({len(df)} points) :")
+    print(df.to_string())
+    
+    # --------------------------------------------------
+    # COORDINATE TRANSFORMATION → original image space
+    # SCT output is in cropped (150×150) y-flipped volume
+    # 1. x_img = SCT_x + x_lo_crop
+    # 2. y_img = nKy - (SCT_y + y_lo_crop)
+    # --------------------------------------------------
+    CROP_SIZE = 150
+    CROP_HALF = CROP_SIZE // 2
+
+    nKy       = nKy
+    cx        = nKx_recon // 2
+    cy        = nKy // 2
+    x_lo_crop = cx - CROP_HALF
+    y_lo_crop = cy - CROP_HALF
+
+    print(f"\n=== Coordinate transformation → original image space ===")
+    print(f"  x_lo_crop={x_lo_crop}, y_lo_crop={y_lo_crop}, nKy={nKy}")
+
+    with open(csv_path, "w") as f:
+        for _, row in df.head(nSlice).iterrows():
+            z_sl  = int(round(row["z"]))
+            x_img = row["x"] + x_lo_crop
+            y_img = nKy - (row["y"] + y_lo_crop)
+            f.write(f"{x_img:.4f},{y_img:.4f},{z_sl}\n")
+            print(f"  z={z_sl:2d} → x={x_img:.1f}, y={y_img:.1f}")
+
+    print(f"\nCenterline CSV saved : {csv_path}")
+
+    # Copy to final csv_path if different name
+    if sct_csv != csv_path:
+        import shutil
+        shutil.copy(sct_csv, csv_path)
+        print(f"Copied to : {csv_path}")
+
+    print(f"\nCenterline CSV saved : {csv_path}")
+    print(f"Check coordinates against manual reference before enabling masking.")
+
+    return csv_path
+
 def process_raw(raw, mrdHeader):
     rep_index = raw.acquisitions[0].idx.repetition
 
@@ -91,6 +341,37 @@ def process_raw(raw, mrdHeader):
     
     # Load precomputed kspace
     #raw.load_kspace("ice_data.npz")
+
+    # --------------------------------------------------
+    # Build reference volume and save it under NifTi
+    CENTERLINE_DIR = Path("/workspaces/siemens-fire/Icesimu_output/sct_centerline")
+
+    ref_path = build_reference_volume(
+        kspace     = kspace,
+        acs_mask   = acs_mask,
+        mrdHeader  = mrdHeader,
+        output_dir = CENTERLINE_DIR,
+        raw = raw
+    )
+
+    print(f"Reference volume ready : {ref_path}")
+    print("SCT centerline detection can now be run on this volume.")
+    print("(SCT call will be added in next step)")
+
+    # Run SCT centerline detection — results saved to CENTERLINE_DIR for inspection
+    # csv_path = run_sct_centerline(output_dir=CENTERLINE_DIR)
+    csv_path = run_sct_centerline(
+        output_dir = CENTERLINE_DIR,
+        nKy        = kspace.shape[7],
+        nKx_recon  = mrdHeader.encoding[0].reconSpace.matrixSize.x,
+        nSlice     = kspace.shape[5]
+    )
+
+    if csv_path is not None:
+        print(f"Centerline detection successful : {csv_path}")
+        print(f"Inspect coordinates before enabling navigator masking.")
+    else:
+        print(f"Centerline detection failed — continuing without masking")
 
     # Extract phase for each repetition (TEMP for current data with multiple reps)
     # TODO: This is not robust. Find a general way to deal with the multiple dims
