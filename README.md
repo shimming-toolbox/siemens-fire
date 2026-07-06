@@ -149,3 +149,7 @@ For more details, please consult [Kelvin Chow's documentation](https://github.co
 > [!NOTE]
 > **TODO**
 
+---
+
+## Contributors
+
