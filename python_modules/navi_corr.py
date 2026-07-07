@@ -318,6 +318,31 @@ def run_sct_centerline(output_dir, nKy, nKx_recon, nSlice):
 
     return csv_path
 
+def apply_nav_mask_from_centerline(nav_line, x_img, nKx_recon, width=20):
+    """
+    Apply spatial mask to navigator line around spinal cord centerline.
+    Navigator is FFT'd to spatial domain, masked, and returned masked.
+
+    nav_line  : (nKx,) complex — navigator kspace line
+    x_img     : float — centerline x in image coordinates (0 to nKx_recon)
+    nKx_recon : int — image size along x (after oversampling removal)
+    width     : int — half-width of mask in navigator spatial domain
+    """
+    # FFT to spatial domain
+    nav_spatial = np.fft.fftshift(np.fft.fft(nav_line))
+    N = len(nav_spatial)
+
+    # Scale x_img (image coords) to navigator spatial domain
+    x_center = int(x_img / nKx_recon * N)
+
+    # Apply rectangular mask
+    mask = np.zeros_like(nav_spatial)
+    lo = max(0, x_center - width)
+    hi = min(N, x_center + width)
+    mask[lo:hi] = 1
+
+    return nav_spatial * mask
+
 def process_raw(raw, mrdHeader):
     rep_index = raw.acquisitions[0].idx.repetition
 
@@ -355,8 +380,7 @@ def process_raw(raw, mrdHeader):
     )
 
     print(f"Reference volume ready : {ref_path}")
-    print("SCT centerline detection can now be run on this volume.")
-    print("(SCT call will be added in next step)")
+    print("SCT centerline detection will now be run on this volume.")
 
     # Run SCT centerline detection — results saved to CENTERLINE_DIR for inspection
     # csv_path = run_sct_centerline(output_dir=CENTERLINE_DIR)
@@ -369,15 +393,68 @@ def process_raw(raw, mrdHeader):
 
     if csv_path is not None:
         print(f"Centerline detection successful : {csv_path}")
-        print(f"Inspect coordinates before enabling navigator masking.")
     else:
         print(f"Centerline detection failed — continuing without masking")
 
-    # Extract phase for each repetition (TEMP for current data with multiple reps)
-    # TODO: This is not robust. Find a general way to deal with the multiple dims
-    S = navigator[:, 0, 0, 0, 0, :, 0, :, :, :] # shape : (rep, slices, lines, samples, coils)
-    S = np.transpose(S, (0, 3, 2, 1, 4)) # shape : (rep, samples, lines, slices, coils)
+    # --------------------------------------------------
+    # LOAD CENTERLINE CSV
+    # --------------------------------------------------
+    center_x_per_slice = {}
 
+    if csv_path is not None:
+        df_cl = pd.read_csv(csv_path, header=None, names=["x", "y", "z"])
+        center_x_per_slice = {int(row["z"]): float(row["x"]) for _, row in df_cl.iterrows()}
+        print(f"Centerline loaded : {len(center_x_per_slice)} slices")
+        use_mask = True
+    else:
+        print("No centerline — using full navigator line")
+        use_mask = False
+
+    # --------------------------------------------------
+    # NAVIGATOR PREPARATION — same as original
+    # S : (rep, samples=nKx, lines=nKy, slices=nSlice, coils)
+    # --------------------------------------------------
+    # # Extract phase for each repetition (TEMP for current data with multiple reps)
+    # # TODO: This is not robust. Find a general way to deal with the multiple dims
+    # S = navigator[:, 0, 0, 0, 0, :, 0, :, :, :] # shape : (rep, slices, lines, samples, coils)
+    # S = np.transpose(S, (0, 3, 2, 1, 4)) # shape : (rep, samples, lines, slices, coils)
+
+    S = navigator[:, 0, 0, 0, 0, :, 0, :, :, :]
+    S = np.transpose(S, (0, 3, 2, 1, 4))
+
+    # --------------------------------------------------
+    # CENTERLINE MASKING on navigator lines
+    # S[rep, samples, ky, sl, coil] — samples axis = nav readout
+    # apply_nav_mask_from_centerline works on (nKx,) 1D line
+    # center_x is in image coordinates (0 to nKx_recon)
+    # --------------------------------------------------
+    if use_mask:
+        print("Applying centerline mask to navigator...")
+        nKx_full  = S.shape[1]   # full readout size (with oversampling)
+        nSlice_S  = S.shape[3]
+        nRep_S    = S.shape[0]
+        nKy_S     = S.shape[2]
+        nCoils_S  = S.shape[4]
+
+        S_masked = S.copy()
+        for sl in range(nSlice_S):
+            center_x = center_x_per_slice.get(sl)
+            if center_x is None:
+                print(f"  sl={sl} : no centerline — using full line")
+                continue
+            for rep in range(nRep_S):
+                for ky in range(nKy_S):
+                    for co in range(nCoils_S):
+                        nav_line = S[rep, :, ky, sl, co]   # (nKx_full,)
+                        S_masked[rep, :, ky, sl, co] = apply_nav_mask_from_centerline(
+                            nav_line, center_x, nKx_recon  = mrdHeader.encoding[0].reconSpace.matrixSize.x, width=40
+                        )
+        S = S_masked
+        print("Centerline masking applied.")
+
+    # --------------------------------------------------
+    # PHASE EXTRACTION — unchanged from original
+    # --------------------------------------------------
     print("Computing corrections...")
     phase_extractions = np.stack([phase_extraction(s, raw.noise.data.T) for s in S])
     nx = mrdHeader.encoding[0].encodedSpace.matrixSize.x
