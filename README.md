@@ -152,4 +152,4 @@ For more details, please consult [Kelvin Chow's documentation](https://github.co
 ---
 
 ## Contributors
-
+The recon method was developped by Mark Chiew at the Univeristy of Toronto. 
