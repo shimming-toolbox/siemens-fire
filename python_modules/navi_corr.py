@@ -447,7 +447,7 @@ def process_raw(raw, mrdHeader):
                     for co in range(nCoils_S):
                         nav_line = S[rep, :, ky, sl, co]   # (nKx_full,)
                         S_masked[rep, :, ky, sl, co] = apply_nav_mask_from_centerline(
-                            nav_line, center_x, nKx_recon  = mrdHeader.encoding[0].reconSpace.matrixSize.x, width=40
+                            nav_line, center_x, nKx_recon  = mrdHeader.encoding[0].reconSpace.matrixSize.x, width=70
                         )
         S = S_masked
         print("Centerline masking applied.")
