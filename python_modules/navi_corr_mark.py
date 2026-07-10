@@ -20,6 +20,11 @@ from grappa import grappa
 from SLR import SLR
 from common import SiemensRAW
 
+'''
+This script is a modified version of navi_corr.py found on the navi-me-gre branch of siemens-fire. Parts of the process_raw function were changed in order to implement the a new reconstruction method.
+The method bins navigators and seperates the lines of kspace into these bins with the goal to seperate lines of kspace based on when they were acquired in the breathing cycle. The original recon script can be found in this repo,
+it's called Example_Recon.ipynb.
+'''
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
 
