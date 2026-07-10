@@ -357,9 +357,9 @@ def process_raw(raw, mrdHeader):
     # Build kspace and navigator data structure
     print("Building kspace array...")
     kspace, navigator, acs_mask = raw.build_kspace()
-    kspace = kspace[[rep_index], ...]
-    navigator = navigator[[rep_index], ...]
-    acs_mask = acs_mask[[rep_index], ...]
+    kspace = kspace[[rep_index], ...]           # (1, 1, 1, 1, nEcho=4, nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
+    navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
+    acs_mask = acs_mask[[rep_index], ...]       # same as kspace
 
     # Save it for tests
     #raw.save_kspace("ice_data.npz")
@@ -464,12 +464,13 @@ def process_raw(raw, mrdHeader):
     # par FIRE, il est absent.
     # dt est dans le header de l'acquisition.
     echo_times = np.array(mrdHeader.sequenceParameters.TE, dtype=np.float32) * 1e-3
+    print ("echo_times=", echo_times)
     navigator_te = 24e-3
     dt = 5e-6
 
     # Apply navigator correction
     print("Applying corrections...")
-    field_estimates = field_conversion(phase_extractions, navigator_te)
+    field_estimates = field_conversion(phase_extractions, navigator_te) # rad/s
     corrected = kspace_correction(kspace, field_estimates, nx, echo_times, dt)
 
     # Use GRAPPA to fill in missing kspace lines
@@ -568,44 +569,64 @@ def reconstruct_image(kspace, axes=(3, 4)):
 
 def phase_extraction(navigator, noise):
     """
-    
     Arguments:
     navigator -- shape : (j, l, p, c) -> (samples, lines, slices, coils)
     noise     -- shape : (j, c)       -> (samples, coils)
     """
-    # subtract first navigator phase to remove static phase contributions
-    delta_S = navigator * np.exp(-1j*np.angle(navigator[:, [0], :, :])) 
+    print("navigator.shape", navigator.shape)   # (768, 384, 15, coils=(4,8,...))
+    print("noise.shape=", noise.shape)      # (768, coils=(4,8,...))
 
-    w = np.abs(delta_S) / np.std(noise, axis=0) # TODO: check if should need to raise to power 2
+    # subtract first navigator phase to remove static phase contributions
+    delta_S = navigator * np.exp(-1j*np.angle(navigator[:, [0], :, :]))  # (samples=768, lines=384, slices=15, coils=(4,8,...))
+    print("delta_S.shape=", delta_S.shape)
+
+    w = np.abs(delta_S) / np.std(noise, axis=0)   # (768, 384, 15, coils=(4,8,...))  (TODO: check if should need to raise to power 2)
+    print("w.shape=", w.shape)
     # RuntimeWarning here because of dividing by zero
-    w_tilde = w/np.sum(w, axis=(0, 3), keepdims=True)
+    w_tilde = w/np.sum(w, axis=(0, 3), keepdims=True) # (768, 384, 15, coils=(4,8,...))
+    print("w_tilde.shape=", w_tilde.shape)
     # Replace resulting NaNs by zero
     w_tilde[np.isnan(w_tilde)] = 0.0
 
-    delta_S = np.sum(w_tilde * delta_S, axis=(0, 3))
+    delta_S = np.sum(w_tilde * delta_S, axis=(0, 3)) # (384, 15)  (lines, slices)
+    print("delta_S.shape=", delta_S.shape)
 
-    delta_phi_mean = np.angle(np.mean(delta_S, axis=0))
+    delta_phi_mean = np.angle(np.mean(delta_S, axis=0)) # (15,)  (slices,)
+    print("delta_phi_mean.shape=", delta_phi_mean.shape)
 
-    delta_S_tilde = delta_S * np.exp(-1j * delta_phi_mean)
+    delta_S_tilde = delta_S * np.exp(-1j * delta_phi_mean) # (384, 15)  (lines, slices)
+    print("delta_S_tilde.shape=", delta_S_tilde.shape) 
 
-    delta_phi = np.angle(delta_S_tilde)
+    delta_phi = np.angle(delta_S_tilde) # (384, 15)  (lines, slices)
+    print("delta_phi.shape=", delta_phi.shape)
 
     return delta_phi
 
 def field_conversion(nav_phases, te_nav):
-    return nav_phases/te_nav
+    print ("nav_phases.shape=", nav_phases.shape) # (1, 384, 15)  (1, lines, slices)
+    return nav_phases/te_nav    # rad/s
 
 def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt):
+    print("raw_data.shape", raw_data.shape)         # (1, 1, 1, 1, 4, 15, 1, 384, 768, coils=(4,8,...)) (1, 1, 1, 1, echo, slices, 1, lines, samples, coils)
+    print("field_estimates.shape", field_estimates.shape)    # (1, 384, 15)  (1, lines, slices)
+    print("echo_times.shape", echo_times.shape)     # (4,)  (echo,)
+
     t = np.array([(j - n_samples/2)*dt for j in range(n_samples)], dtype=np.float32)
+    print("t.shape", t.shape) # (768,) (samples,)
     t = np.repeat(t[:, np.newaxis], echo_times.shape[0], axis=1)
+    print("t.shape", t.shape) # (768, 4) (samples, echo)
 
     t += echo_times # will probably crash
+    print("t.shape", t.shape) # (768, 4) (samples, echo)
 
     demodulation = np.exp(-1j * np.einsum('rlp,je->replj', field_estimates, t))
+    print("demodulation.shape", demodulation.shape) # (1, 4, 15, 384, 768) (1, echo, slices, lines, samples)
 
     # TODO: handle all the dimensions correctly instead of squeezing
-    return raw_data.squeeze()*demodulation[..., np.newaxis] # again check shape for broadcasting
-
+    corrected = raw_data.squeeze()*demodulation[..., np.newaxis] # (1, 4, 15, 384, 768, coils=(4,8,...)) (1, echo, slices, lines, samples, coils)
+    print("corrected.shape", corrected.shape)
+    return corrected
+ 
 def grappa_reconstruction(kspace, acs_lines):
 
     def _grappa(kspace, acs_lines):
