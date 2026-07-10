@@ -234,6 +234,7 @@ def run_sct_centerline(output_dir, nKy, nKx_recon, nSlice):
     ref_path    = output_dir / "ref_echo0.nii.gz"
     cl_nii_path = output_dir / "ref_echo0_centerline.nii.gz"
     csv_path    = output_dir / "ref_echo0_centerline.csv"
+    csv_path_crop = output_dir / "ref_echo0_centerline_crop.csv"
 
     if csv_path.exists():
         print(f"Centerline CSV already present : {csv_path}")
@@ -287,13 +288,30 @@ def run_sct_centerline(output_dir, nKy, nKx_recon, nSlice):
     # --------------------------------------------------
     CROP_SIZE = 150
     CROP_HALF = CROP_SIZE // 2
-
-    nKy       = nKy
     cx        = nKx_recon // 2
     cy        = nKy // 2
     x_lo_crop = cx - CROP_HALF
     y_lo_crop = cy - CROP_HALF
 
+    # --------------------------------------------------
+    # CSV 1 — cropped volume space (raw SCT output)
+    # Coordinates in the 150×150 y-flipped cropped volume
+    # Useful for debugging and visualizing on ref_echo0.nii.gz
+    # --------------------------------------------------
+    with open(csv_path_crop, "w") as f:
+        f.write("x_crop,y_crop,z_anat\n")   # header for readability
+        for _, row in df.head(nSlice).iterrows():
+            z_sl = int(round(row["z"]))
+            f.write(f"{row['x']:.4f},{row['y']:.4f},{z_sl}\n")
+
+    print(f"\nCenterline in cropped image space CSV saved : {csv_path_crop}")
+    print(f"  (coordinates in 150×150 y-flipped cropped volume)")
+
+    # --------------------------------------------------
+    # CSV 2 — original image space (transformed)
+    # Coordinates in the full 384×384 image
+    # Used by apply_nav_mask_from_centerline in the pipeline
+    # --------------------------------------------------
     print(f"\n=== Coordinate transformation → original image space ===")
     print(f"  x_lo_crop={x_lo_crop}, y_lo_crop={y_lo_crop}, nKy={nKy}")
 
@@ -303,18 +321,10 @@ def run_sct_centerline(output_dir, nKy, nKx_recon, nSlice):
             x_img = row["x"] + x_lo_crop
             y_img = nKy - (row["y"] + y_lo_crop)
             f.write(f"{x_img:.4f},{y_img:.4f},{z_sl}\n")
-            print(f"  z={z_sl:2d} → x={x_img:.1f}, y={y_img:.1f}")
+            print(f"  z={z_sl:2d} → crop({row['x']:.0f},{row['y']:.0f}) "
+                  f"→ img({x_img:.1f},{y_img:.1f})")
 
-    print(f"\nCenterline CSV saved : {csv_path}")
-
-    # Copy to final csv_path if different name
-    if sct_csv != csv_path:
-        import shutil
-        shutil.copy(sct_csv, csv_path)
-        print(f"Copied to : {csv_path}")
-
-    print(f"\nCenterline CSV saved : {csv_path}")
-    print(f"Check coordinates against manual reference before enabling masking.")
+    print(f"\nCenterline in full image space CSV saved : {csv_path}")
 
     return csv_path
 
