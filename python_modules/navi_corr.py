@@ -13,13 +13,13 @@ import re
 import mrdhelper
 import constants
 from time import perf_counter
-from pygrappa import grappa
 from tempfile import mkdtemp
 from pathlib import Path
 import nibabel as nib
 import pandas as pd
 
 from common import SiemensRAW
+from grappa import grappa
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
@@ -194,8 +194,6 @@ def build_reference_volume(kspace, acs_mask, mrdHeader, output_dir, raw):
             dz = abs(z1 - z0)
         else:
             dz = 5.0   # fallback
-
-        print(f"  dz from slice positions : {dz:.4f} mm")
 
     # --------------------------------------------------
     # FLIP y + SIMPLE DIAGONAL AFFINE (MRINavigator.jl convention)
@@ -637,25 +635,57 @@ def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt):
     print("corrected.shape", corrected.shape)
     return corrected
  
-def grappa_reconstruction(kspace, acs_lines):
-
-    def _grappa(kspace, acs_lines):
-        calib = np.trim_zeros(acs_lines)
-        # transpose, because pygrappa assumes (x, y, c) and not (y, x, c) like we have
-        calib = np.transpose(calib, (1, 0, 2))
-        k = np.transpose(kspace, (1, 0, 2))
-        # tranpose back to keep it consistent with the rest of our code
-        return np.transpose(grappa(k, calib), (1, 0, 2))
-
+def grappa_reconstruction(kspace, acs_lines, R=2, kernel_size=(5, 5)):
+    
     *leading, y, x, c = kspace.shape
 
-    # (-1) in reshape means it's inferred from the other dims
-    kspace_r = kspace.reshape(-1, y, x, c)
-    acs_lines_r = acs_lines.reshape(-1, y, x, c)
+    kspace_r   = kspace.reshape(-1, y, x, c)
+    acs_mask_r = acs_lines.reshape(-1, y, x, c)
 
-    results = np.memmap(os.path.join(mkdtemp(), 'grappa.dat'), dtype=np.complex64, mode='w+', shape=kspace_r.shape)
+    results = np.memmap(
+        os.path.join(mkdtemp(), 'grappa.dat'),
+        dtype=np.complex64, mode='w+',
+        shape=kspace_r.shape
+    )
+
     for i in range(kspace_r.shape[0]):
-        results[i] = _grappa(kspace_r[i], acs_lines_r[i])
-    results.flush()
+        # kspace_r[i]   : (nKy, nKx, nCoils) → reorder to (nCoils, nKy, nKx)
+        k_coils   = np.moveaxis(kspace_r[i],   -1, 0)   # (nCoils, nKy, nKx)
+        acs_coils = np.moveaxis(acs_mask_r[i], -1, 0)   # (nCoils, nKy, nKx)
 
+        # Extract ACS line indices from mask
+        # acs_coils[0] is boolean mask of shape (nKy, nKx)
+        # ACS lines are those where the entire ky line is non-zero
+        acs_line_mask = np.any(np.abs(acs_coils[0]) > 1e-8, axis=-1)
+        acs_idx       = np.where(acs_line_mask)[0]   # (nACS,)
+
+        if len(acs_idx) == 0:
+            print(f"  WARNING : no ACS lines found for batch {i}")
+            results[i] = kspace_r[i]
+            continue
+
+        # Apply GRAPPA — returns (nCoils, nKy, nKx)
+        k_filled = apply_grappa(k_coils, acs_idx, R=R, kernel_size=kernel_size)
+
+        # Reorder back to (nKy, nKx, nCoils)
+        results[i] = np.moveaxis(k_filled, 0, -1)
+
+    results.flush()
     return results.reshape(*leading, y, x, c)
+
+def apply_grappa(kspace_2d, acs_lines, R, kernel_size=(5, 5)):
+    
+    if R is None:
+        raise ValueError("R cannot be None")
+
+    k = np.swapaxes(kspace_2d, 1, 2).astype(np.complex64)  # (nCoil, nKx, nKy)
+    calib = k[:, :, acs_lines].copy()                       # (nCoil, nKx, nACS)
+
+    k_filled = grappa(
+        data   = k,
+        calib  = calib,
+        R      = (1, int(R)),    # int() pour garantir le type
+        kernel = kernel_size
+    )
+
+    return np.swapaxes(k_filled, 1, 2)   # (nCoil, nKy, nKx)
