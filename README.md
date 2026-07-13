@@ -2,6 +2,8 @@
 
 This repository contains tools, scripts, and instructions for building a chroot disk image of _Shimming Toolbox_ and deploying it on Siemens MARS MRI systems using the _Framework for Image REconstruction_ (FIRE). This approach simplifies advanced shimming protocols by removing the need for an external laptop running _Shimming Toolbox_. It provides a step-by-step guide to create the image locally with Docker, compress it, and transfer it to a USB drive for installation on the scanner hardware. The repository also includes guidelines for testing Python modules both locally and directly on the MARS system.
 
+Documentation on FIRE is available on [NeuroPoly's GDrive folder](https://drive.google.com/drive/folders/1mQc9Gtj9m9Cfl9mV8wJ1ECQDraXTgZPF) (private).
+
 Many of the scripts are adapted from [Kelvin Chow's _python-ismrmrd-server_ repository](https://github.com/kspaceKelvin/python-ismrmrd-server). Please refer to that repository’s documentation for additional details.
 
 ---
