@@ -23,6 +23,7 @@ py-modules = [
     "common",
     "mrd_flags",
     "navi_corr",
+    "grappa",
 ]
 
 [tool.setuptools.package-dir]
