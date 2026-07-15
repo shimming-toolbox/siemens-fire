@@ -34,7 +34,8 @@ def test_st_b0shim_gre_slicewise(tmpdir):
             "optimizer-criteria": "rmse",
             "regularization-factor": "0.1",
             "weighting-signal-loss": "10",
-            "mask-dilation-kernel-size": "5"
+            "mask-dilation-kernel-size": "5",
+            "off-channels": "1,2"
         }
     }
 
@@ -91,6 +92,7 @@ def test_st_b0shim_gre_volume(tmpdir):
             "regularization-factor": "0.1",
             "weighting-signal-loss": "10",
             "mask-dilation-kernel-size": "5",
+            "off-channels": "1,2"
         }
     }
 
