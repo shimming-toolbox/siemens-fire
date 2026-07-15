@@ -1,7 +1,9 @@
 import numpy as np
 from matplotlib import pyplot as plt
 import utils
-
+'''
+This script was made by Prof. Mark Chiew at the University of Toronto.
+'''
 class hankel:
     """Basic Hankel Matrix Class"""
 
