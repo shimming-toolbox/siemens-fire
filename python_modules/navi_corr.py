@@ -1,4 +1,5 @@
 import ismrmrd
+from ismrmrdtools import coils
 import os
 import itertools
 import logging
@@ -533,7 +534,7 @@ def convert_to_ismrmrd_images(images, acq_headers, fov):
         images_out.append(ismrmrd_image)
     return images_out
 
-def raw_to_image(raw):
+def raw_to_image(raw, noise_data=None):
     # assumed shape : (repetitions, echoes, slices, y, x, coils)
     #                 (0          , 1     , 2,    , 3, 4, 5) 
 
@@ -541,8 +542,9 @@ def raw_to_image(raw):
     data = reconstruct_image(data)
     data *= np.prod(data.shape) # FFT scaling, for consistency with ICE apparently
 
-    # RMS (temporary)
-    data = coil_combination(data)
+    # Walsh coil combination
+    print("  Using Walsh coil combination with prewhitening...")
+    data = coil_combination_walsh(data, noise_data=noise_data)
 
     # Remove readout oversampling by cropping
     data = remove_oversampling(data, 4)
@@ -556,8 +558,62 @@ def remove_oversampling(data, readout_axis, oversampling_factor=2):
 
     return data.take(np.arange(start, start+recon_size), axis=readout_axis)
 
-def coil_combination(data, coil_axis=-1):
-    return np.sqrt(np.sum(np.square(data), axis=coil_axis))
+def coil_combination_walsh(data, noise_data=None, smoothing=5, niter=3):
+    """
+    Coil combination using Walsh iterative method with optional prewhitening.
+    
+    Pipeline :
+        1. Prewhitening: decorrelates coil noise
+        2. Walsh CSM estimation: estimates sensitivity maps from image itself
+        3. Sensitivity-weighted combination: optimal SNR combination
+    
+    Parameters
+    ----------
+    data (rep, echo, slice, y, x, coils): complex coil images
+    noise_data (nCoils, nSamples): raw.noise.data
+    smoothing (int): smoothing kernel for Walsh CSM (default 5)
+    niter (int): Walsh power iterations (default 3)
+
+    Returns
+    -------
+    combined (rep, echo, slice, y, x): magnitude combined image
+    """
+    rep, echo, slc, y, x, nCoils = data.shape
+
+    # Prewhitening matrix from noise scan
+    if noise_data is not None:
+        dmtx = coils.calculate_prewhitening(noise_data)
+        print(f"  Prewhitening matrix computed : shape={np.asarray(dmtx).shape}")
+    else:
+        dmtx = None
+
+    combined = np.zeros((rep, echo, slc, y, x), dtype=np.float32)
+
+    for r in range(rep):
+        for e in range(echo):
+            for s in range(slc):
+                # Extract coil images : (y, x, nCoils) → (nCoils, y, x)
+                img_coils = np.moveaxis(data[r, e, s], -1, 0)
+
+                # Prewhitening
+                if dmtx is not None:
+                    img_coils = coils.apply_prewhitening(img_coils, dmtx)
+                    # apply_prewhitening expects (nCoils, ...) ✓
+
+                # Walsh CSM estimation from prewhitened images
+                csm, rho = coils.calculate_csm_walsh( # csm : (nCoils, y, x) — complex sensitivity maps
+                    img_coils,
+                    smoothing=smoothing,
+                    niter=niter
+                )
+
+                # Sensitivity-weighted combination
+                combined_complex = np.sum( np.conj(csm) * img_coils, axis=0)   # (y, x) complex
+
+                # Magnitude
+                combined[r, e, s] = np.abs(combined_complex)
+
+    return combined
 
 
 def reconstruct_image(kspace, axes=(3, 4)):
