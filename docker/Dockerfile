@@ -92,7 +92,6 @@ COPY ./python_modules/finst_shim.py  /opt/code/python-ismrmrd-server
 COPY ./python_modules/finst_shim.json  /opt/code/python-ismrmrd-server
 COPY ./python_modules/navi_corr.py  /opt/code/python-ismrmrd-server
 COPY ./python_modules/common.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/mrd_flags.py  /opt/code/python-ismrmrd-server
 COPY ./python_modules/grappa.py  /opt/code/python-ismrmrd-server
 
 # Set the st_masking module as the default module
