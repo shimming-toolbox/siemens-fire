@@ -68,6 +68,9 @@ RUN mkdir /opt/code/prelude && \
     curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
     sudo install /opt/code/prelude/prelude /usr/local/bin
 
+# Install ismrmrd-python-tools
+RUN pip install /opt/code/ismrmrd-python-tools
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /usr/local/bin/uv
 # Add uv files
