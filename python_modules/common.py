@@ -90,7 +90,7 @@ class SiemensRAW:
         navigator = np.zeros(dims[:4] + (1,) + dims[5:], dtype=np.complex64)
         # Only need one contrast dimension for navigator
         #navigator = navigator[:, :, :, :, [0], :, :, :, :, :]
-        acs_mask = np.zeros_like(kspace, dtype=np.bool)
+        acs_mask = np.zeros_like(kspace, dtype=bool)
 
         used_idx = set()
         for i in range(len(self.acquisitions)):
