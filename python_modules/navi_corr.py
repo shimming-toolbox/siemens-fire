@@ -18,6 +18,7 @@ from tempfile import mkdtemp
 from pathlib import Path
 import nibabel as nib
 import pandas as pd
+from dipy.denoise.localpca import mppca
 
 from common import SiemensRAW
 from grappa import grappa
@@ -494,6 +495,15 @@ def process_raw(raw, mrdHeader):
     # Save images for faster testing
     # np.save("images.npy", images)
 
+    # Reshape for MPPCA : (nEcho, nRep, nSlice, nKy, nKx)
+    imgs_for_denoise = corrected[0]   # (4, 15, 384, 384) = (echo, slice, y, x)
+    imgs_for_denoise = imgs_for_denoise[:, np.newaxis, :, :, :] # (4, 1, 15, 384, 384) = (echo, rep, slice, y, x)
+
+    imgs_denoised = denoise_mppca(imgs_for_denoise, patch_radius=2)
+
+    # Reshape back
+    corrected = imgs_denoised[:, 0, :, :, :][np.newaxis, :, :, :, :] # (1, 4, 15, 384, 384) = (rep, echo, slice, y, x)
+
     field_of_view = (ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.x), 
                             ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.y), 
                             ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.z))
@@ -742,3 +752,39 @@ def apply_grappa(kspace_2d, acs_lines, R, kernel_size=(5, 5)):
     )
 
     return np.swapaxes(k_filled, 1, 2)   # (nCoil, nKy, nKx)
+
+def denoise_mppca(images, patch_radius=2):
+    """
+    MPPCA denoising on multi-echo multi-rep magnitude images.
+    Exploits redundancy across echoes AND repetitions.
+
+    images (nEcho, nRep, nSlice, nKy, nKx): magnitude
+    patch_radius (int): spatial patch size = (2r+1)³
+
+    Returns
+    -------
+    denoised : same shape as images
+    """    
+
+    nEcho, nRep, nSlice, nKy, nKx = images.shape
+
+    # MPPCA works on 4D volume (x, y, z, volumes)
+    # Reshape to (nKy, nKx, nSlice, nEcho*nRep)
+    imgs_4d = images.reshape(nEcho*nRep, nSlice, nKy, nKx)
+    imgs_4d = np.moveaxis(imgs_4d, 0, -1)   # (nSlice, nKy, nKx, nVol)
+    imgs_4d = np.moveaxis(imgs_4d, 0, 2)    # (nKy, nKx, nSlice, nVol)
+    imgs_4d = imgs_4d.astype(np.float64)
+
+    print(f"  MPPCA input shape : {imgs_4d.shape}")
+
+    denoised_4d, sigma = mppca(imgs_4d, patch_radius=patch_radius,
+                                return_sigma=True)
+
+    print(f"  Estimated noise sigma : {sigma.mean():.4f}")
+
+    # Reshape back
+    denoised_4d = np.moveaxis(denoised_4d, 2, 0)   # (nSlice, nKy, nKx, nVol)
+    denoised_4d = np.moveaxis(denoised_4d, -1, 0)  # (nVol, nSlice, nKy, nKx)
+    denoised    = denoised_4d.reshape(nEcho, nRep, nSlice, nKy, nKx)
+
+    return denoised
