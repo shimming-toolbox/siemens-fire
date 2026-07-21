@@ -190,6 +190,10 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
     with open(fname_fmap_json, 'r') as f:
         sidecar = json.load(f)
 
+    # Copy to main data directory
+    shutil.copyfile(fname_fmap_json, os.path.join(dataFolder, "fieldmap.json"))
+    shutil.copyfile(fname_fmap, os.path.join(dataFolder, "fieldmap.nii.gz"))
+
     head = [img.getHead()                                  for img in imgGroup]
     meta = [ismrmrd.Meta.deserialize(img.attribute_string) for img in imgGroup]
     
@@ -302,10 +306,6 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
         logging.debug("Image data has %d elements", imagesOut[mrd_slice_index].data.size)
 
         imagesOut[mrd_slice_index].attribute_string = metaXml
-
-        # Copy to main data directory
-        shutil.copyfile(fname_fmap_json, os.path.join(dataFolder, "fieldmap.json"))
-        shutil.copyfile(fname_fmap, os.path.join(dataFolder, "fieldmap.nii.gz"))
 
         # Debug output
         if "xml" not in dset.list():
