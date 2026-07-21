@@ -143,6 +143,7 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
                     '--regularization-factor', str(mrdhelper.get_json_config_param(config_dict, 'regularization-factor', default=0.1, type='float')),
                     '--weighting-signal-loss', str(mrdhelper.get_json_config_param(config_dict, 'weighting-signal-loss', default=10, type='float')),
                     '--mask-dilation-kernel-size', str(mrdhelper.get_json_config_param(config_dict, 'mask-dilation-kernel-size', default=5, type='int')),
+                    '--off-channels', mrdhelper.get_json_config_param(config_dict, 'off-channels', default='', type='str'),
                     '--output-file-format-scanner', output_file_format_scanner,
                     '-o', b0shimFolder],
                     check=True)

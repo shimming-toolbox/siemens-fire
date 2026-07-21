@@ -22,6 +22,9 @@
         "Comment: weighting-signal-loss": "Weighting factor for the signal loss term in the optimization problem. Recommendation: rmse: 10, mse: 0.01.",
 
         "mask-dilation-kernel-size": "5",
-        "Comment: mask-dilation-kernel-size": "Kernel size for the dilation of the mask. Useful to ensure the shimmed region is large enough in the through slice direction when slicewise shimming."
+        "Comment: mask-dilation-kernel-size": "Kernel size for the dilation of the mask. Useful to ensure the shimmed region is large enough in the through slice direction when slicewise shimming.",
+        
+        "off-channels": "",
+        "Comment: off-channels": "Comma-separated list of channels to be turned off during the shim optimization. The list depends on the value of 'scanner-coil-order'. Example: (scanner-coil-order: 0,1,2) 0,2,4 to turn off f0, y and z2, (scanner-coil-order: 1,2) 0,2,4 to turn off x, z and zx). If empty, all channels will be used."
     }
 }

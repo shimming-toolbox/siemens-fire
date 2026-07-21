@@ -18,6 +18,7 @@ import shutil
 from threading import Thread
 import traceback
 import mrdhelper # Custom module for MRD helper functions found in the python-ismrmrd-server repository
+import ast
 
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import normalized_mutual_information as nmi
@@ -40,14 +41,8 @@ fname_solution = None
 
 
 NB_CHANNELS_TO_SEND_TO_SEQ = 4
-f0_ub = 100
-f0_lb = -100
-gradx_ub = 0.2
-gradx_lb = -0.2
-grady_ub = 0.2
-grady_lb = -0.2
-gradz_ub = 0.2
-gradz_lb = -0.2
+default_f0 = [-100, 100]
+default_grad = [-0.2, 0.2]
 sum_cstr = np.inf
 
 # Signal interrupt for bb_block
@@ -350,11 +345,6 @@ def process(connection, config, metadata):
     channels_to_shim = mrdhelper.get_json_config_param(config_dict, "channels_to_shim", default="fxyz")
     objective = mrdhelper.get_json_config_param(config_dict, "objective", default="Sig int")
     use_f0_offset_from_gradients = mrdhelper.get_json_config_param(config_dict, "use_f0_offset_from_gradients", default=True, type="bool")
-    # Todo TEMP: Remove this
-    #objective = "Sig int + mi"
-    #channels_to_shim = 'fz'
-    #use_surrogate = False
-    #use_f0_offset_from_gradients = True
 
     global debugFolder, fname_solution, is_obj_with_sigint, is_obj_with_mi, is_obj_with_fmap, fname_all_currents, fname_currents_per_volume
     is_obj_with_sigint = False
@@ -467,15 +457,18 @@ def process(connection, config, metadata):
     nii_anat_epi_space = None
     square_mask_coords = None
 
+    f0_bounds = ast.literal_eval(mrdhelper.get_json_config_param(config_dict, "f0_bounds", default=default_f0))
+    xyz_bounds = ast.literal_eval(mrdhelper.get_json_config_param(config_dict, "xyz_bounds", default=default_grad))
+
     if use_surrogate or is_obj_with_fmap:
         nii_fmap, json_data = find_and_read_fmap_within_data()
         isocenter = get_isocenter(json_data)
         st_scanner_constraints = {"name": "scanner",
                                   "coef_sum_max": sum_cstr,
-                                  "coef_channel_minmax": {"0": [[f0_lb, f0_ub]],
-                                                          "1": [[gradx_lb, gradx_ub],
-                                                                [grady_lb, grady_ub],
-                                                                [gradz_lb, gradz_ub]]}}
+                                  "coef_channel_minmax": {"0": [f0_bounds],
+                                                          "1": [xyz_bounds,
+                                                                xyz_bounds,
+                                                                xyz_bounds]}}
         scanner_coil = ScannerCoil(nii_fmap.shape[:3], nii_fmap.affine, constraints=st_scanner_constraints, orders=(0, 1),
                                    manufacturer="Siemens", isocenter=isocenter)
         nii_coil = nib.Nifti1Image(scanner_coil.profile, nii_fmap.affine, header=nii_fmap.header)
@@ -529,17 +522,17 @@ def process(connection, config, metadata):
     lb = []
     ub = []
     if 'f' in channels_to_shim:
-        lb.append(f0_lb)
-        ub.append(f0_ub)
+        lb.append(f0_bounds[0])
+        ub.append(f0_bounds[1])
     if 'x' in channels_to_shim:
-        lb.append(gradx_lb)
-        ub.append(gradx_ub)
+        lb.append(xyz_bounds[0])
+        ub.append(xyz_bounds[1])
     if 'y' in channels_to_shim:
-        lb.append(grady_lb)
-        ub.append(grady_ub)
+        lb.append(xyz_bounds[0])
+        ub.append(xyz_bounds[1])
     if 'z' in channels_to_shim:
-        lb.append(gradz_lb)
-        ub.append(gradz_ub)
+        lb.append(xyz_bounds[0])
+        ub.append(xyz_bounds[1])
 
     # start the optimizer threads
     for i in range(nb_slices):
@@ -778,8 +771,8 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
         nii_tmp = mrd2nii_stack(metadata, item, include_slice_gap=True)
         if item.getHead().repetition == 20:
             nib.save(nii_tmp, f"{debugFolder}/slice{slice_nii}_rep{item.getHead().repetition}.nii.gz")
-            nib.Nifti1Image(mask, nii_tmp.affine, header=nii_tmp.header)
-            nib.save(nib.Nifti1Image(mask, nii_tmp.affine, header=nii_tmp.header), f"{debugFolder}/mask_slice{slice_nii}.nii.gz")
+            nii_tmp_mask = nib.Nifti1Image(mask, nii_tmp.affine, header=nii_tmp.header)
+            nib.save(nii_tmp_mask, f"{debugFolder}/mask_slice{slice_nii}.nii.gz")
         
         obj = calculate_obj_function(is_obj_with_sigint, is_obj_with_mi, nii_tmp, mask, nii_anat_epi_space, square_mask_coords, slice_nii)
         f_queues[slice_mrd].put((obj, item.getHead().repetition))
@@ -792,6 +785,10 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
 
 
 def calculate_obj_function(use_sig_int, use_mi, nii_slice, mask, nii_anat_epi_space, square_mask_coords, slice_nii):
+    
+    if len(nii_slice.shape) == 3 and nii_slice.shape[2] == 1:
+        nii_slice = nib.Nifti1Image(nii_slice.get_fdata()[..., 0], nii_slice.affine, header=nii_slice.header)
+
     if use_sig_int and not use_mi:
         obj = np.average(nii_slice.get_fdata(), weights=mask)
     elif not use_sig_int and use_mi:
