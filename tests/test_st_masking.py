@@ -13,7 +13,7 @@ from . import DEBUG
 
 
 def test_st_masking_sct_deepseg_20mm_circular(tmpdir):
-    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "test_st_masking_sct_deepseg_20mm_circular.log")
+    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "log", "test_st_masking_sct_deepseg_20mm_circular.log")
     if os.path.exists(fname_logfile):
         os.remove(fname_logfile)
 
@@ -71,7 +71,7 @@ def test_st_masking_sct_deepseg_20mm_circular(tmpdir):
 
 
 def test_st_masking_sct_propseg_csf(tmpdir):
-    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "test_st_masking_sct_propseg_csf.log")
+    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "log", "test_st_masking_sct_propseg_csf.log")
     if os.path.exists(fname_logfile):
         os.remove(fname_logfile)
 
@@ -129,7 +129,7 @@ def test_st_masking_sct_propseg_csf(tmpdir):
 
 
 def test_st_masking_threshold(tmpdir):
-    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "test_st_masking_threshold.log")
+    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "log", "test_st_masking_threshold.log")
     if os.path.exists(fname_logfile):
         os.remove(fname_logfile)
 
@@ -187,7 +187,7 @@ def test_st_masking_threshold(tmpdir):
 
 
 def test_st_masking_bet(tmpdir):
-    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "test_st_masking_bet.log")
+    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "log", "test_st_masking_bet.log")
     if os.path.exists(fname_logfile):
         os.remove(fname_logfile)
 
