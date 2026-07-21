@@ -238,7 +238,7 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
 
     if mrdHeader.encoding[0].encodedSpace.matrixSize.z != 1:
         # 3d
-        slice_order_nii_to_chrono = {i: i for i in range(nb_slices)}
+        slice_order_nii_to_chrono = {i: nb_slices - i - 1 for i in range(nb_slices)}
     else:
         slice_order_nii_to_chrono = extract_nii_slice_ordering_to_chronological(sidecar, nb_slices)
 
