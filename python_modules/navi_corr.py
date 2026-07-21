@@ -543,8 +543,8 @@ def raw_to_image(raw, noise_data=None):
     data *= np.prod(data.shape) # FFT scaling, for consistency with ICE apparently
 
     # Walsh coil combination
-    print("  Using Walsh coil combination with prewhitening...")
-    data = coil_combination_walsh(data, noise_data=noise_data)
+    print("  Using Inati coil combination with prewhitening...")
+    data = coil_combination_Inati(data, noise_data=noise_data)
 
     # Remove readout oversampling by cropping
     data = remove_oversampling(data, 4)
@@ -558,13 +558,13 @@ def remove_oversampling(data, readout_axis, oversampling_factor=2):
 
     return data.take(np.arange(start, start+recon_size), axis=readout_axis)
 
-def coil_combination_walsh(data, noise_data=None, smoothing=5, niter=3):
+def coil_combination_Inati(data, noise_data=None, smoothing=5, niter=3):
     """
-    Coil combination using Walsh iterative method with optional prewhitening.
+    Coil combination using Inati iterative method with prewhitening.
     
     Pipeline :
         1. Prewhitening: decorrelates coil noise
-        2. Walsh CSM estimation: estimates sensitivity maps from image itself
+        2. Inati CSM estimation: estimates sensitivity maps from image itself
         3. Sensitivity-weighted combination: optimal SNR combination
     
     Parameters
@@ -598,17 +598,14 @@ def coil_combination_walsh(data, noise_data=None, smoothing=5, niter=3):
                 # Prewhitening
                 if dmtx is not None:
                     img_coils = coils.apply_prewhitening(img_coils, dmtx)
-                    # apply_prewhitening expects (nCoils, ...) ✓
 
-                # Walsh CSM estimation from prewhitened images
-                csm, rho = coils.calculate_csm_walsh( # csm : (nCoils, y, x) — complex sensitivity maps
+                # Inati returns (csm, combined_image) directly
+                _, combined_complex = coils.calculate_csm_inati_iter(
                     img_coils,
-                    smoothing=smoothing,
-                    niter=niter
+                    smoothing = smoothing,
+                    niter     = niter,
+                    thresh    = 1e-3
                 )
-
-                # Sensitivity-weighted combination
-                combined_complex = np.sum( np.conj(csm) * img_coils, axis=0)   # (y, x) complex
 
                 # Magnitude
                 combined[r, e, s] = np.abs(combined_complex)
