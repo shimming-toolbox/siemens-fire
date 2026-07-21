@@ -328,30 +328,37 @@ def run_sct_centerline(output_dir, nKy, nKx_recon, nSlice):
 
     return csv_path
 
-def apply_nav_mask_from_centerline(nav_line, x_img, nKx_recon, width=20):
+def apply_nav_mask_from_centerline(S, center_x_per_slice, nKx_recon, width=35):
     """
-    Apply spatial mask to navigator line around spinal cord centerline.
-    Navigator is FFT'd to spatial domain, masked, and returned masked.
+    Apply spatial masks to all navigator lines around the spinal cord centerline.
+    Navigators are FFT'd to spatial domain, masked per slice, and returned masked.
 
-    nav_line  : (nKx,) complex — navigator kspace line
-    x_img     : float — centerline x in image coordinates (0 to nKx_recon)
-    nKx_recon : int — image size along x (after oversampling removal)
-    width     : int — half-width of mask in navigator spatial domain
+    S (rep, samples, ky, sl, coil): complex — navigator kspace lines
+    center_x_per_slice {sl: x_img}:  centerline x in image coords (0 to nKx_recon)
+    nKx_recon (int): image size along x (after oversampling removal)
+    width (int): half-width of mask in navigator spatial domain
     """
-    # FFT to spatial domain
-    nav_spatial = np.fft.fftshift(np.fft.fft(nav_line))
-    N = len(nav_spatial)
 
-    # Scale x_img (image coords) to navigator spatial domain
-    x_center = int(x_img / nKx_recon * N)
+    N = S.shape[1]        # samples axis (navigator readout, with oversampling)
+    nSlice = S.shape[3]
 
-    # Apply rectangular mask
-    mask = np.zeros_like(nav_spatial)
-    lo = max(0, x_center - width)
-    hi = min(N, x_center + width)
-    mask[lo:hi] = 1
+    # FFT to spatial domain: one batched FFT over the samples axis
+    nav_spatial = np.fft.fftshift(np.fft.fft(S, axis=1), axes=1)
+   
+    # Build (samples, sl) mask
+    mask = np.zeros((N, nSlice))
+    for sl, x_img in center_x_per_slice.items():
+        # Scale x_img (image coords) to navigator spatial domain
+        x_center = int(x_img / nKx_recon * N)
+        # Rectangular mask
+        lo = max(0, x_center - width)
+        hi = min(N, x_center + width)
+        mask[lo:hi, sl] = 1
 
-    return nav_spatial * mask
+    # Broadcast (samples, sl) → (rep, samples, ky, sl, coil)
+    nav_masked = nav_spatial * mask[None, :, None, :, None]
+
+    return nav_masked
 
 def process_raw(raw, mrdHeader):
     rep_index = raw.acquisitions[0].idx.repetition
@@ -436,30 +443,16 @@ def process_raw(raw, mrdHeader):
     # CENTERLINE MASKING on navigator lines
     # S[rep, samples, ky, sl, coil] — samples axis = nav readout
     # apply_nav_mask_from_centerline works on (nKx,) 1D line
-    # center_x is in image coordinates (0 to nKx_recon)
+    # center_x_per_slice is in image coordinates (0 to nKx_recon)
     # --------------------------------------------------
     if use_mask:
         print("Applying centerline mask to navigator...")
-        nKx_full  = S.shape[1]   # full readout size (with oversampling)
-        nSlice_S  = S.shape[3]
-        nRep_S    = S.shape[0]
-        nKy_S     = S.shape[2]
-        nCoils_S  = S.shape[4]
-
-        S_masked = S.copy()
-        for sl in range(nSlice_S):
-            center_x = center_x_per_slice.get(sl)
-            if center_x is None:
-                print(f"  sl={sl} : no centerline — using full line")
-                continue
-            for rep in range(nRep_S):
-                for ky in range(nKy_S):
-                    for co in range(nCoils_S):
-                        nav_line = S[rep, :, ky, sl, co]   # (nKx_full,)
-                        S_masked[rep, :, ky, sl, co] = apply_nav_mask_from_centerline(
-                            nav_line, center_x, nKx_recon  = mrdHeader.encoding[0].reconSpace.matrixSize.x, width=70
-                        )
-        S = S_masked
+        S = apply_nav_mask_from_centerline(
+            S,
+            center_x_per_slice,
+            nKx_recon=mrdHeader.encoding[0].reconSpace.matrixSize.x,
+            width=35,
+        )
         print("Centerline masking applied.")
 
     # --------------------------------------------------
