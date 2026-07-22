@@ -12,7 +12,6 @@ from python_modules import __PATH_TESTING_DATA__, __PATH_REPO__, __TMP_SHARE_DEB
 from . import DEBUG
 
 
-
 def test_st_fieldmap_use_mask(tmpdir):
     # Copy mask into saved_data folder
     fname_mask = os.path.join(__PATH_TESTING_DATA__, "gre_mask.nii.gz")
