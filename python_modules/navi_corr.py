@@ -109,8 +109,6 @@ def build_reference_volume(kspace, acs_mask, mrdHeader, output_dir, raw):
     nKx_recon = enc.reconSpace.matrixSize.x
     pixel_size_x = fov_x / nKx_recon
     pixel_size_y = fov_y / nKy
-    # dz           = enc.reconSpace.fieldOfView_mm.z / nSlice \
-    #                if enc.reconSpace.fieldOfView_mm.z > 0 else 5.0
 
     # --------------------------------------------------
     # GRAPPA RECONSTRUCTION ON ECHO 0
@@ -132,7 +130,19 @@ def build_reference_volume(kspace, acs_mask, mrdHeader, output_dir, raw):
     kspace_restored = kspace_grappa[np.newaxis, np.newaxis, :, :, :, :]
     print(f"  kspace_restored.shape : {kspace_restored.shape}")
 
-    images = raw_to_image(kspace_restored)
+    def coil_combination(data, coil_axis=-1):
+        return np.sqrt(np.sum(np.square(data), axis=coil_axis))
+
+    data = np.flip(kspace_restored, (3, 4)) # inverser les données en x et y for some reason
+    data = reconstruct_image(data)
+    data *= np.prod(data.shape) # FFT scaling, for consistency with ICE apparently
+
+    # RMS
+    data = coil_combination(data)
+
+    # Remove readout oversampling by cropping
+    images = remove_oversampling(data, 4)
+
     images = mag_images(images)
     print(f"  images.shape : {images.shape}")
 
