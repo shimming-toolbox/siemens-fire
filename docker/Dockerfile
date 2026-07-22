@@ -68,6 +68,18 @@ RUN mkdir /opt/code/prelude && \
     curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
     sudo install /opt/code/prelude/prelude /usr/local/bin
 
+# Install ismrmrd-python-tools
+RUN pip install /opt/code/ismrmrd-python-tools
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /usr/local/bin/uv
+# Add uv files
+COPY ./uv/.python-version /opt/code/python-ismrmrd-server
+COPY ./uv/pyproject.toml /opt/code/python-ismrmrd-server
+COPY ./uv/uv.lock /opt/code/python-ismrmrd-server
+# Install python packages
+RUN uv sync --frozen --project /opt/code/python-ismrmrd-server
+
 FROM mrd_converter AS python-mrd-devcontainer
 
 # Add ST modules
@@ -81,9 +93,12 @@ COPY ./python_modules/nomad_f0xyz_opt.py  /opt/code/python-ismrmrd-server
 COPY ./python_modules/nomad_f0xyz_opt.json  /opt/code/python-ismrmrd-server
 COPY ./python_modules/finst_shim.py  /opt/code/python-ismrmrd-server
 COPY ./python_modules/finst_shim.json  /opt/code/python-ismrmrd-server
+COPY ./python_modules/navi_corr.py  /opt/code/python-ismrmrd-server
+COPY ./python_modules/common.py  /opt/code/python-ismrmrd-server
+COPY ./python_modules/grappa.py  /opt/code/python-ismrmrd-server
 
 # Set the st_masking module as the default module
-# CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate shim-dev && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]
+#CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate base && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]
 CMD /bin/bash
 
 # Clean up to reduce image size

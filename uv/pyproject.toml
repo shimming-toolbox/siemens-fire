@@ -1,0 +1,30 @@
+[project]
+name = "siemens-fire"
+version = "0.1.0"
+description = "Additionnal modules for ISMRMRD server"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "ismrmrd==1.14.1",
+    "matplotlib>=3.10.8",
+    "memray>=1.19.3",
+    "numpy==2.2.6",
+    "pygrappa>=0.26.3",
+    "scikit-image>=0.26.0",
+    "tqdm>=4.67.3",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+    "common",
+    "mrd_flags",
+    "navi_corr",
+    "grappa",
+]
+
+[tool.setuptools.package-dir]
+"" = "../python_modules"
