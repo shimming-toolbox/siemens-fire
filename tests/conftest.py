@@ -37,7 +37,10 @@ def clean_debug_folder():
 def run_server():
     """Starts the application server process in the background for testing."""
 
-    fname_log_file = f"{__PATH_TESTING_DATA__}/server.log"
+    if not os.path.exists(os.path.join(__PATH_TESTING_DATA__, "log")):
+        os.makedirs(os.path.join(__PATH_TESTING_DATA__, "log"))
+
+    fname_log_file = f"{__PATH_TESTING_DATA__}/log/server.log"
     if os.path.exists(fname_log_file):
         os.remove(fname_log_file)
 
