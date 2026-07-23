@@ -51,15 +51,6 @@ ENV PATH=/opt/code/spinalcordtoolbox/bin:$PATH
 # Install sct_deepseg spinalcord model
 RUN sct_deepseg spinalcord -install
 
-# Install specific versions
-RUN pip install numpy==1.26.4 h5py==3.14.0
-
-# Clone the mrd2nii repository and install it
-RUN mkdir -p /opt/code/mrd2nii && \
-    git clone https://github.com/shimming-toolbox/mrd2nii.git /opt/code/mrd2nii && \
-    cd /opt/code/mrd2nii && \
-    pip install -e .
-
 # Install bet2
 RUN conda install -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge fsl-bet2
 
@@ -68,18 +59,9 @@ RUN mkdir /opt/code/prelude && \
     curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
     sudo install /opt/code/prelude/prelude /usr/local/bin
 
-# Install ismrmrd-python-tools
-RUN pip install /opt/code/ismrmrd-python-tools
-
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /usr/local/bin/uv
 ENV UV_LINK_MODE=copy
-# Add uv files
-#COPY ./uv/.python-version /opt/code/python-ismrmrd-server
-#COPY ./uv/pyproject.toml /opt/code/python-ismrmrd-server
-#COPY ./uv/uv.lock /opt/code/python-ismrmrd-server
-## Install python packages
-#RUN uv sync --frozen
 
 FROM mrd_converter AS python-mrd-devcontainer
 
