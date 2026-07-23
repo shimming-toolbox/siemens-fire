@@ -1,0 +1,26 @@
+[project]
+name = "siemens-fire"
+version = "0.1.0"
+description = "Additionnal modules for ISMRMRD server"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ismrmrd==1.14.1",
+    "matplotlib>=3.10.8",
+    "memray>=1.19.3",
+    "numpy>=2.2.6",
+    "python-ismrmrd-server",
+    "scikit-image>=0.26.0",
+    "shimmingtoolbox",
+    "tqdm>=4.67.3",
+]
+
+[tool.uv.sources]
+python-ismrmrd-server = { git = "https://github.com/Antetokounpo/python-ismrmrd-server" }
+shimmingtoolbox = { git = "https://github.com/shimming-toolbox/shimming-toolbox", subdirectory = "shimming-toolbox" }
+
+#[tool.uv]
+# Because volume mounts are treated as separate file systems in Docker,
+# it breaks hard linking between the uv cache (by default in /root) and the venv directory (in the volume).
+# Solution: put the cache directory in the current directory
+#cache-dir = ".uv_cache"
