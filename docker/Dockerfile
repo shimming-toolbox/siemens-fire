@@ -73,29 +73,19 @@ RUN pip install /opt/code/ismrmrd-python-tools
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /usr/local/bin/uv
+ENV UV_LINK_MODE=copy
 # Add uv files
-COPY ./uv/.python-version /opt/code/python-ismrmrd-server
-COPY ./uv/pyproject.toml /opt/code/python-ismrmrd-server
-COPY ./uv/uv.lock /opt/code/python-ismrmrd-server
-# Install python packages
-RUN uv sync --frozen --project /opt/code/python-ismrmrd-server
+#COPY ./uv/.python-version /opt/code/python-ismrmrd-server
+#COPY ./uv/pyproject.toml /opt/code/python-ismrmrd-server
+#COPY ./uv/uv.lock /opt/code/python-ismrmrd-server
+## Install python packages
+#RUN uv sync --frozen
 
 FROM mrd_converter AS python-mrd-devcontainer
 
 # Add ST modules
-COPY ./python_modules/st_masking.py    /opt/code/python-ismrmrd-server
-COPY ./python_modules/st_masking.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/st_fieldmap.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/st_fieldmap.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/st_b0shim.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/st_b0shim.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/nomad_f0xyz_opt.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/nomad_f0xyz_opt.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/finst_shim.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/finst_shim.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/navi_corr.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/common.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/grappa.py  /opt/code/python-ismrmrd-server
+RUN mkdir -p /workspaces/siemens-fire
+COPY ./python_modules ./workspaces/siemens-fire
 
 # Set the st_masking module as the default module
 #CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate base && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]
