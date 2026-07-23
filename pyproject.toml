@@ -5,6 +5,7 @@ description = "Additionnal modules for ISMRMRD server"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "dipy>=1.12.1",
     "ismrmrd==1.14.1",
     "ismrmrd-python-tools",
     "matplotlib>=3.10.8",
