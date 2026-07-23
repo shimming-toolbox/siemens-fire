@@ -66,8 +66,10 @@ ENV UV_LINK_MODE=copy
 FROM mrd_converter AS python-mrd-devcontainer
 
 # Add ST modules
-RUN mkdir -p /workspaces/siemens-fire
-COPY ./python_modules ./workspaces/siemens-fire
+RUN mkdir -p /opt/code/siemens-fire
+COPY ./ ./opt/code/siemens-fire/
+WORKDIR /opt/code/siemens-fire
+RUN uv sync --frozen
 
 # Set the st_masking module as the default module
 #CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate base && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]
