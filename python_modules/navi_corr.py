@@ -11,8 +11,8 @@ import xml.dom.minidom
 import base64
 import ctypes
 import re
-import mrdhelper
-import constants
+import ismrmrd_server.mrdhelper
+import ismrmrd_server.constants
 from time import perf_counter
 from tempfile import mkdtemp
 from pathlib import Path
