@@ -10,7 +10,7 @@
 # ---
 # This only needs to be done once per twix file
 
- Imports
+# Imports
 import numpy as np
 
 # Try importing CuPy and checking for an active CUDA GPU
