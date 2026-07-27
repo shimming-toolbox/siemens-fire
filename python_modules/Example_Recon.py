@@ -57,10 +57,16 @@ def sos(x, axis=-1):
 
 
 # ### Load and whiten data
-
+parser = argparse.ArgumentParser(description='Reconstruct a selected slice from the GRE data.')
+parser.add_argument('--slc', type=int, required=True, help='slice index to reconstruct')
+parser.add_argument('--r', type=int, default=150, help='rank parameter for the SLR reconstruction')
+parser.add_argument('--nbins', type=int, default=4, help='number of navigator bins for the reconstruction')
+parser.add_argument('--sct_crop', type=bool, default=True, help='use sct segmentation cropping instead of hardcoded indices')
+parser.add_argument('--i', type=str, required=True, help='.dat file containing the raw kspace data to be reconstructed')
+args = parser.parse_args()
 
 # Map twix file
-map = twixtools.map_twix('meas_MID00151_FID35300_gre_spine.dat')
+map = twixtools.map_twix(args.i)
 
 # Image data
 map[-1]['image'].flags['zf_missing_lines'] = True
@@ -109,7 +115,9 @@ ref_nav = np.tensordot(ref_nav, W, axes=((-2,),(0)))
 # ### Define parameters for reconstruction
 
 # slice to reconstruct
-slc = 2
+slc = args.slc
+if not 0 <= slc < nslc:
+    raise ValueError(f'slc={slc} is out of range for the available {nslc} slices')
 
 # echoes to reconstruct
 eco = np.arange(neco)
@@ -121,7 +129,7 @@ rep = np.arange(nrep)
 # increasing this number increases the number of resolved dynamic states, but also increases computation time and memory
 # on CPU, I would recommend nbins ≤ 8, anything beyond that gets pretty slow
 # on GPU, I've tested up to nbins = 16 and it works reasonably fast, probably diminishing returns
-nbins = 2
+nbins = args.nbins
 
 
 # ### Navigator binning with k-means
