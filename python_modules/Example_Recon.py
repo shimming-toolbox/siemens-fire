@@ -133,14 +133,43 @@ nbins = args.nbins
 
 
 # ### Navigator binning with k-means
+init_all = np.zeros((nslc, nc, nx, ny, neco), dtype=np.complex64)
 
+for s in range(nslc):
+    for i in eco:
+        # GRAPPA recon per slice
+        init_all[s, :, :, :, i] = grappa.grappa(
+            np.mean(img[:, i, s, :, :, :], axis=0).transpose((2, 1, 0)),
+            np.mean(ref[:, i, s, :, :, :], axis=0).transpose((2, 1, 0)),
+                (1, 2), (3, 2)
+            )
+img_3d_full = np.mean(np.abs(init_all), axis=(1, 4)).transpose((1, 2, 0)) # shape (nx, ny, nslc)
 
 # concatenate navigators, and inverse FFT navigators along RO dimension
 # use only sampled lines, to avoid an extra trivial cluster from the empty lines
 nav = ifftdim(np.concatenate((img_nav[:,slc,::R,:,:], ref_nav[:,slc,:,:,:]), axis=1), dims=(-2,))
 
 # select RO indices near the spinal cord, as we only care about that region
-sc_idx = np.arange(170,220)
+sct_crop = args.sct_crop
+
+if sct_crop:
+    affine = np.eye(4)
+    x_idx, y_idx = get_spinal_cord_crop_indices.get_indices(
+        img_3d_full, 
+        affine, 
+        contrast="t2", 
+        margin_x=20,  
+        margin_y=5,   
+        x_axis=0, 
+        y_axis=1
+    )
+
+    # Use x_idx for navigator selection
+    sc_idx = x_idx
+else:
+    sc_idx = (164, 220)
+
+init = init_all[slc]
 
 # reference everything relative to the first line, and average the relative signals across coil channels
 tmp = nav[:, :, sc_idx, :]
@@ -156,10 +185,7 @@ tmp = np.concatenate((np.real(tmp), np.imag(tmp)), axis=-1)
 idx = sklearn.cluster.KMeans(n_clusters=nbins).fit(tmp.reshape((-1,tmp.shape[-1]))).labels_.reshape((nrep,-1))
 
 
-# ### Prep binned data and initialization
-
-
-
+# ### Prep binned data
 # sort data into new bin dimension using k-means indices
 # the data across all repetitions is being used here, as well as the reference data
 # the cnt array just keeps track in case the same line appears in the same bin across repetitions
@@ -203,7 +229,7 @@ init = init.reshape((nx, ny, -1))
 # it is possible to do this, of course, but it requires a bit more tweaking of hyperparameters (kernel size, rank, etc.)
 # if you do want a full FOV image, I would actually recommend trying to generate it with a series R0 cropped reconstructions, and combining afterwards
 # an example of this is provided in Full_FOV_Recon.ipynb
-xidx = np.arange(160,224)
+xidx = sc_idx
 nx = len(xidx)
 
 # ifft to x-dimension, crop, the fft back to kx
