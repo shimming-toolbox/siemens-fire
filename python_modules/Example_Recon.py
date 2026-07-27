@@ -10,15 +10,36 @@
 # ---
 # This only needs to be done once per twix file
 
-# Imports
+ Imports
+import numpy as np
+
+# Try importing CuPy and checking for an active CUDA GPU
+HAS_GPU = False
+
+try:
+    import cupy as cp
+    # Verify that an active NVIDIA device is accessible
+    _ = cp.cuda.Device(0).compute_capability
+    HAS_GPU = True
+    import gpuSLR
+    print(f"[INFO] NVIDIA GPU detected ({cp.cuda.runtime.getDeviceProperties(0)['name'].decode()}). Running on GPU.")
+except ImportError:
+    print("[INFO] CuPy is not installed. Falling back to CPU.")
+    import SLR
+except Exception as e:
+    print(f"[INFO] GPU initialization failed ({e}). Falling back to CPU.")
+    import SLR
+
+import argparse
 import numpy as np
 from matplotlib import pyplot as plt
 import nibabel as nib
 import twixtools # for reading/loading raw twix data
 import sklearn   # used only for k-means 
-#import gpuSLR    # GPU version of SLR
-import SLR       # Structured low-rank methods for joint recon
 import grappa    # grappa for computing initialization
+import subprocess
+import os
+import get_spinal_cord_crop_indices
 
 
 # Define some helper functions
@@ -213,19 +234,16 @@ niters = 100
 kernel = (5,5)
 
 # example gpu reconstruction using the c_matrix
-# out = gpuSLR.ADMM(dat,                # input data
-                 # gpuSLR.c_matrix,    # type of structured low-rank matrix. options are `c_matrix`, `s_matrix` or `vcc_matrix`
-                  #kernel,             # SLR kernel size
-                  #r,                  # rank (d
-                  #niters=niters,      # number of iterations (default 100)
-                  #init=init)          # initialization (defaults to array of zeros)
-
-# similar reconstruction using cpu
-out = SLR.ADMM(dat, SLR.c_matrix, kernel, r, niters=niters, init=init)
-
-# example gpu reconstruction with no initialization
-# this will work, but requires more iterations to converge
-# out = gpuSLR.ADMM(dat, gpuSLR.c_matrix, kernel, r, niters=niters*10)
+if HAS_GPU:
+    out = gpuSLR.ADMM(dat,              # input data
+                    gpuSLR.c_matrix,    # type of structured low-rank matrix. options are `c_matrix`, `s_matrix` or `vcc_matrix`
+                    kernel,             # SLR kernel size
+                    r,                  # rank (d
+                    niters=niters,      # number of iterations (default 100)
+                    init=init)          # initialization (defaults to array of zeros)
+else:
+    # similar reconstruction using cpu
+    out = SLR.ADMM(dat, SLR.c_matrix, kernel, r, niters=niters, init=init)
 
 
 # ### Plot results
