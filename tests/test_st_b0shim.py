@@ -21,7 +21,7 @@ def test_st_b0shim_gre_slicewise(tmpdir):
     shutil.copy(fname_fieldmap, os.path.join(__TMP_SHARE_SAVEDDATA__, "fieldmap.nii.gz"))
     shutil.copy(fname_fieldmap.replace(".nii.gz", ".json"), os.path.join(__TMP_SHARE_SAVEDDATA__, "fieldmap.json"))
 
-    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "test_st_b0shim_gre_slicewise.log")
+    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "log", "test_st_b0shim_gre_slicewise.log")
     if os.path.exists(fname_logfile):
         os.remove(fname_logfile)
 
@@ -78,7 +78,7 @@ def test_st_b0shim_gre_volume(tmpdir):
     shutil.copy(fname_fieldmap, os.path.join(__TMP_SHARE_SAVEDDATA__, "fieldmap.nii.gz"))
     shutil.copy(fname_fieldmap.replace(".nii.gz", ".json"), os.path.join(__TMP_SHARE_SAVEDDATA__, "fieldmap.json"))
 
-    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "test_st_b0shim_gre_volume.log")
+    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "log", "test_st_b0shim_gre_volume.log")
     if os.path.exists(fname_logfile):
         os.remove(fname_logfile)
 

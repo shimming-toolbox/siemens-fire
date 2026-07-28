@@ -12,13 +12,12 @@ from python_modules import __PATH_TESTING_DATA__, __PATH_REPO__, __TMP_SHARE_DEB
 from . import DEBUG
 
 
-
 def test_st_fieldmap_use_mask(tmpdir):
     # Copy mask into saved_data folder
     fname_mask = os.path.join(__PATH_TESTING_DATA__, "gre_mask.nii.gz")
     shutil.copy(fname_mask, os.path.join(__TMP_SHARE_SAVEDDATA__, "mask.nii.gz"))
 
-    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "test_st_fieldmap_use_mask.log")
+    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "log", "test_st_fieldmap_use_mask.log")
     if os.path.exists(fname_logfile):
         os.remove(fname_logfile)
 
@@ -98,7 +97,7 @@ def test_st_fieldmap_use_mask_dilate(tmpdir):
     fname_mask = os.path.join(__PATH_TESTING_DATA__, "gre_mask.nii.gz")
     shutil.copy(fname_mask, os.path.join(__TMP_SHARE_SAVEDDATA__, "mask.nii.gz"))
 
-    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "test_st_fieldmap_use_mask_dilate.log")
+    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "log", "test_st_fieldmap_use_mask_dilate.log")
     if os.path.exists(fname_logfile):
         os.remove(fname_logfile)
 

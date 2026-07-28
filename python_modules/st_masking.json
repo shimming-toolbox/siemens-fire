@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "parameters": {
-        "method": "sct_prop",
+        "method": "sct_deepseg",
         "Comment: Allowed method options": ["sct_propseg", "sct_deepseg", "bet", "threshold"],
 
         "threshold_thr": "0.1",

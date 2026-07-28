@@ -66,8 +66,6 @@ def process(connection, config, mrdHeader):
                 if item.image_series_index != currentSeries:
                     logging.info("Processing a group of images because series index changed to %d", item.image_series_index)
                     currentSeries = item.image_series_index
-                    if dset is None:
-                        dset = create_debug_save_file()
                     image = process_image(imgGroup, connection, config, mrdHeader, dset)
                     connection.send_image(image)
                     imgGroup = []
@@ -339,7 +337,7 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
 
     if mrdHeader.encoding[0].encodedSpace.matrixSize.z != 1:
         # 3d
-        slice_order_nii_to_chrono = {i: i for i in range(nb_slices)}
+        slice_order_nii_to_chrono = {i: nb_slices - i - 1 for i in range(nb_slices)}
     else:
         slice_order_nii_to_chrono = extract_nii_slice_ordering_to_chronological(sidecar, nb_slices)
 
@@ -481,6 +479,6 @@ def create_debug_save_file():
 
     # Create HDF5 file to store incoming MRD data
     logging.info("Incoming data will be saved to: '%s' in group '%s'", mrdFilePath, "dataset")
-    dset = ismrmrd.Dataset(mrdFilePath, "dataset")
+    dset = ismrmrd.Dataset(mrdFilePath, dataset_name="dataset")
     dset._file.require_group("dataset")
     return dset

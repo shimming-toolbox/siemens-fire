@@ -176,19 +176,31 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
                    check=True)
 
     nii_fmap = nib.load(fname_fmap)
-    data_fmap = nii_fmap.get_fdata().astype(np.int16)
+    data_fmap = nii_fmap.get_fdata()
 
-    # Scale to int16 max
-    # dyn_range = data_fmap.max() - data_fmap.min()
-    # if dyn_range == 0:
-    #    dyn_range = 1
-    # data_fmap = (data_fmap - data_fmap.min()) / dyn_range
-    # data_fmap *= 32767
-    # data_fmap = data_fmap.astype(np.int16)
+    # Scale to uint16 max
+    uint16_max = np.iinfo(np.uint16).max
+    data_fmap_max = data_fmap.max()
+    data_fmap_min = data_fmap.min()
+    dyn_range = data_fmap_max - data_fmap_min
+    if dyn_range == 0:
+        dyn_range = 1
+    data_fmap_uint16 = (data_fmap - data_fmap_min) * uint16_max / dyn_range
+    data_fmap_uint16 = data_fmap_uint16.astype(np.uint16)
+    
+    # Compute RescaleSlope and RescaleIntercept for MRD MetaAttributes
+    # The formula for rescaling is:
+    # value = RescaleSlope*pixelValue + RescaleIntercept
+    rescale_slope = dyn_range / uint16_max
+    rescale_intercept = data_fmap_min
 
     fname_fmap_json = fname_fmap.replace('.nii.gz', '.json')
     with open(fname_fmap_json, 'r') as f:
         sidecar = json.load(f)
+
+    # Copy to main data directory
+    shutil.copyfile(fname_fmap_json, os.path.join(dataFolder, "fieldmap.json"))
+    shutil.copyfile(fname_fmap, os.path.join(dataFolder, "fieldmap.nii.gz"))
 
     head = [img.getHead()                                  for img in imgGroup]
     meta = [ismrmrd.Meta.deserialize(img.attribute_string) for img in imgGroup]
@@ -238,7 +250,7 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
 
     if mrdHeader.encoding[0].encodedSpace.matrixSize.z != 1:
         # 3d
-        slice_order_nii_to_chrono = {i: i for i in range(nb_slices)}
+        slice_order_nii_to_chrono = {i: nb_slices - i - 1 for i in range(nb_slices)}
     else:
         slice_order_nii_to_chrono = extract_nii_slice_ordering_to_chronological(sidecar, nb_slices)
 
@@ -250,11 +262,11 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
         # Select the slice
         slice_dim_in_nifti_coords = dim_of_freq_phase_slice_enc_directions[2]
         if slice_dim_in_nifti_coords == 0:
-            tmp = data_fmap[nii_slice_index, :, :]
+            tmp = data_fmap_uint16[nii_slice_index, :, :]
         elif slice_dim_in_nifti_coords == 1:
-            tmp = data_fmap[:, nii_slice_index, :]
+            tmp = data_fmap_uint16[:, nii_slice_index, :]
         elif slice_dim_in_nifti_coords ==2:
-            tmp = data_fmap[:, :, nii_slice_index]
+            tmp = data_fmap_uint16[:, :, nii_slice_index]
         else:
             raise NotImplementedError("Slice index is not 0, 1 or 2")
         
@@ -289,6 +301,8 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
         tmpMeta['ImageProcessingHistory']         = ['PYTHON', 'FIELDMAP']
         tmpMeta['SequenceDescriptionAdditional']  = 'FIRE'
         tmpMeta['Keep_image_geometry']            = 1
+        tmpMeta['RescaleSlope']                   = rescale_slope
+        tmpMeta['RescaleIntercept']               = rescale_intercept
 
         # Add image orientation directions to MetaAttributes if not already present
         if tmpMeta.get('ImageRowDir') is None:
@@ -302,10 +316,6 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
         logging.debug("Image data has %d elements", imagesOut[mrd_slice_index].data.size)
 
         imagesOut[mrd_slice_index].attribute_string = metaXml
-
-        # Copy to main data directory
-        shutil.copyfile(fname_fmap_json, os.path.join(dataFolder, "fieldmap.json"))
-        shutil.copyfile(fname_fmap, os.path.join(dataFolder, "fieldmap.nii.gz"))
 
         # Debug output
         if "xml" not in dset.list():

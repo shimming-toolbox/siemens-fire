@@ -15,7 +15,7 @@ def test_nomad(tmpdir):
     fname_mask = os.path.join(__PATH_TESTING_DATA__, "gre_mask.nii.gz")
     shutil.copy(fname_mask, os.path.join(__TMP_SHARE_SAVEDDATA__, "mask.nii.gz"))
 
-    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "test_nomad.log")
+    fname_logfile = os.path.join(__PATH_TESTING_DATA__, "log", "test_nomad.log")
     if os.path.exists(fname_logfile):
         os.remove(fname_logfile)
 

@@ -457,8 +457,8 @@ def process(connection, config, metadata):
     nii_anat_epi_space = None
     square_mask_coords = None
 
-    f0_bounds = ast.literal_eval(mrdhelper.get_json_config_param(config_dict, "f0_bounds", default=default_f0))
-    xyz_bounds = ast.literal_eval(mrdhelper.get_json_config_param(config_dict, "xyz_bounds", default=default_grad))
+    f0_bounds = ast.literal_eval(mrdhelper.get_json_config_param(config_dict, "f0_bounds", default=str(default_f0)))
+    xyz_bounds = ast.literal_eval(mrdhelper.get_json_config_param(config_dict, "xyz_bounds", default=str(default_grad)))
 
     if use_surrogate or is_obj_with_fmap:
         nii_fmap, json_data = find_and_read_fmap_within_data()
