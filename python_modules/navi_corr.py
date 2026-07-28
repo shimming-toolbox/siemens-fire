@@ -20,7 +20,7 @@ import nibabel as nib
 import pandas as pd
 from dipy.denoise.localpca import mppca
 
-from common import SiemensRAW
+from common import SiemensRAW, KSPACE_LAYOUT
 from grappa import grappa
 
 # Folder for debug output files
@@ -440,16 +440,25 @@ def process_raw(raw, mrdHeader):
         use_mask = False
 
     # --------------------------------------------------
-    # NAVIGATOR PREPARATION — same as original
+    # NAVIGATOR PREPARATION
     # S : (rep, samples=nKx, lines=nKy, slices=nSlice, coils)
     # --------------------------------------------------
-    # # Extract phase for each repetition (TEMP for current data with multiple reps)
-    # # TODO: This is not robust. Find a general way to deal with the multiple dims
-    # S = navigator[:, 0, 0, 0, 0, :, 0, :, :, :] # shape : (rep, slices, lines, samples, coils)
-    # S = np.transpose(S, (0, 3, 2, 1, 4)) # shape : (rep, samples, lines, slices, coils)
+    # Axis order is derived from KSPACE_LAYOUT (source used
+    # by _get_kspace_dims), so a reordering there propagates here automatically.
 
-    S = navigator[:, 0, 0, 0, 0, :, 0, :, :, :]
-    S = np.transpose(S, (0, 3, 2, 1, 4))
+    axis_names = list(KSPACE_LAYOUT) + ["kx", "coil"]
+
+    # axes kept in S: rep, slice, ky, kx, coil: all others must be singleton
+    KEEP = {"repetition", "slice", "kspace_encoding_step_1", "kx", "coil"}
+
+    # drop singleton axes
+    squeeze_axes = tuple(i for i, n in enumerate(axis_names) if n not in KEEP)
+    S = navigator.squeeze(axis=squeeze_axes)
+
+    # reorder to (rep, kx, ky, slice, coil)
+    remaining = [n for n in axis_names if n in KEEP]          # order after squeeze
+    target    = ["repetition", "kx", "kspace_encoding_step_1", "slice", "coil"]
+    S = np.transpose(S, [remaining.index(n) for n in target])
 
     # --------------------------------------------------
     # CENTERLINE MASKING on navigator lines
