@@ -388,6 +388,9 @@ def process_raw(raw, mrdHeader):
     navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
     acs_mask = acs_mask[[rep_index], ...]       # same as kspace
 
+    nEcho = kspace.shape[4]
+    nSlice     = kspace.shape[5]
+
     # Save it for tests
     #raw.save_kspace("ice_data.npz")
     
@@ -410,7 +413,6 @@ def process_raw(raw, mrdHeader):
     print("SCT centerline detection will now be run on this volume.")
 
     # Run SCT centerline detection — results saved to CENTERLINE_DIR for inspection
-    # csv_path = run_sct_centerline(output_dir=CENTERLINE_DIR)
     csv_path = run_sct_centerline(
         output_dir = CENTERLINE_DIR,
         nKy        = kspace.shape[7],
@@ -475,11 +477,10 @@ def process_raw(raw, mrdHeader):
     # Par contre, le temps d'écho du navigateur n'est pas dans le header
     # Il serait supposé être dans les user_int des acqs, mais quand on passe
     # par FIRE, il est absent.
-    # dt est dans le header de l'acquisition.
     echo_times = np.array(mrdHeader.sequenceParameters.TE, dtype=np.float32) * 1e-3
     print ("echo_times=", echo_times)
     navigator_te = 24e-3
-    dt = 5e-6
+    dt = raw.acquisitions[0].sample_time_us * 1e-6
 
     # Apply navigator correction
     print("Applying corrections...")
@@ -516,7 +517,7 @@ def process_raw(raw, mrdHeader):
         key = (acq.idx.contrast, acq.idx.slice)
         if key not in header_map:
             header_map[key] = acq.getHead()
-    acq_headers = [header_map[(c, s)] for c in range(4) for s in range(15)]
+    acq_headers = [header_map[(c, s)] for c in range(nEcho) for s in range(nSlice)]
     for i, h in enumerate(acq_headers):
         print(f"Image {i}: contrast={h.idx.contrast}, slice={h.idx.slice}")
     ismrmrd_images = convert_to_ismrmrd_images(corrected, acq_headers, field_of_view)
