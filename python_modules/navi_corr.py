@@ -661,7 +661,7 @@ def phase_extraction(navigator, noise):
     print("noise.shape=", noise.shape)      # (768, coils=(4,8,...))
 
     # subtract first navigator phase to remove static phase contributions
-    delta_S = navigator * np.exp(-1j*np.angle(navigator[:, [0], :, :]))  # (samples=768, lines=384, slices=15, coils=(4,8,...))
+    delta_S = (navigator * np.exp(-1j*np.angle(navigator[:, [0], :, :]))).astype(np.complex64)  # (samples=768, lines=384, slices=15, coils=(4,8,...))
     print("delta_S.shape=", delta_S.shape)
 
     w = np.abs(delta_S) / np.std(noise, axis=0)   # (768, 384, 15, coils=(4,8,...))  (TODO: check if should need to raise to power 2)
@@ -703,7 +703,7 @@ def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt):
     t += echo_times # will probably crash
     print("t.shape", t.shape) # (768, 4) (samples, echo)
 
-    demodulation = np.exp(-1j * np.einsum('rlp,je->replj', field_estimates, t))
+    demodulation = np.exp(-1j * np.einsum('rlp,je->replj', field_estimates, t)).astype(np.complex64)
     print("demodulation.shape", demodulation.shape) # (1, 4, 15, 384, 768) (1, echo, slices, lines, samples)
 
     # TODO: handle all the dimensions correctly instead of squeezing
