@@ -73,7 +73,7 @@ def process(connection, config, mrdHeader):
     finally:
         connection.send_close()
 
-def build_reference_volume(kspace, acs_mask, mrdHeader, output_dir, raw):
+def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, output_dir, raw):
     """
     Reconstruct reference volume from echo 0 and save as NIfTI.
     Slices are stored in anatomical order (inf→sup) for SCT centerline detection.
@@ -82,7 +82,6 @@ def build_reference_volume(kspace, acs_mask, mrdHeader, output_dir, raw):
     ----------
     kspace    : (1, 1, 1, 1, nEcho, nSlice, 1, nKy, nKx, nCoils)
     acs_mask  : same shape as kspace
-    mrdHeader : ISMRMRD header
     output_dir : Path — where to save the NIfTI
     raw        : SiemensRAW object — needed to extract physical slice positions
 
@@ -101,12 +100,6 @@ def build_reference_volume(kspace, acs_mask, mrdHeader, output_dir, raw):
 
     print("Building reference volume from echo 0...")
 
-    nSlice    = kspace.shape[5]
-    nKy       = kspace.shape[7]
-    enc       = mrdHeader.encoding[0]
-    fov_x     = enc.reconSpace.fieldOfView_mm.x
-    fov_y     = enc.reconSpace.fieldOfView_mm.y
-    nKx_recon = enc.reconSpace.matrixSize.x
     pixel_size_x = fov_x / nKx_recon
     pixel_size_y = fov_y / nKy
 
@@ -371,7 +364,26 @@ def apply_nav_mask_from_centerline(S, center_x_per_slice, nKx_recon, width=35):
     return nav_masked
 
 def process_raw(raw, mrdHeader):
+
+    # Metadata from ISMRMRD header
+    acq_metadata=SiemensRAW(mrdHeader)
+    nEcho = acq_metadata.n_echo
+    nSlice = acq_metadata.n_slice
+    nx = acq_metadata.n_kx
+    nKy =  acq_metadata.n_ky
+    nkx_recon = acq_metadata.n_kx_recon
+    echo_times = np.array(acq_metadata.echo_times, dtype=np.float32) * 1e-3 
+    FOV_x = acq_metadata.FOV_x
+    FOV_y = acq_metadata.FOV_y
+    FOV_z = acq_metadata.FOV_z
+
+    # Metadata from acquisitions
     rep_index = raw.acquisitions[0].idx.repetition
+    dt = raw.acquisitions[0].sample_time_us * 1e-6
+
+    # Navigator echo time is not inside the header. It should be under user_int 
+    # from acquisition metadata but is not present when using FIRE
+    navigator_te = 24e-3   
 
     # Preprocessing acquisitions
     # First repetition will contain a noise acq. Extract it and keep it for all reps.
@@ -388,9 +400,6 @@ def process_raw(raw, mrdHeader):
     navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
     acs_mask = acs_mask[[rep_index], ...]       # same as kspace
 
-    nEcho = kspace.shape[4]
-    nSlice     = kspace.shape[5]
-
     # Save it for tests
     #raw.save_kspace("ice_data.npz")
     
@@ -401,24 +410,12 @@ def process_raw(raw, mrdHeader):
     # Build reference volume and save it under NifTi
     CENTERLINE_DIR = Path("/workspaces/siemens-fire/Icesimu_output/sct_centerline")
 
-    ref_path = build_reference_volume(
-        kspace     = kspace,
-        acs_mask   = acs_mask,
-        mrdHeader  = mrdHeader,
-        output_dir = CENTERLINE_DIR,
-        raw = raw
-    )
-
+    ref_path = build_reference_volume(kspace, acs_mask, nKy, nkx_recon, FOV_x, FOV_y, CENTERLINE_DIR, raw)
     print(f"Reference volume ready : {ref_path}")
     print("SCT centerline detection will now be run on this volume.")
 
     # Run SCT centerline detection — results saved to CENTERLINE_DIR for inspection
-    csv_path = run_sct_centerline(
-        output_dir = CENTERLINE_DIR,
-        nKy        = kspace.shape[7],
-        nKx_recon  = mrdHeader.encoding[0].reconSpace.matrixSize.x,
-        nSlice     = kspace.shape[5]
-    )
+    csv_path = run_sct_centerline(CENTERLINE_DIR, nKy, nkx_recon, nSlice)
 
     if csv_path is not None:
         print(f"Centerline detection successful : {csv_path}")
@@ -468,12 +465,7 @@ def process_raw(raw, mrdHeader):
     # --------------------------------------------------
     if use_mask:
         print("Applying centerline mask to navigator...")
-        S = apply_nav_mask_from_centerline(
-            S,
-            center_x_per_slice,
-            nKx_recon=mrdHeader.encoding[0].reconSpace.matrixSize.x,
-            width=35,
-        )
+        S = apply_nav_mask_from_centerline(S, center_x_per_slice, nkx_recon, width=35)
         print("Centerline masking applied.")
 
     # --------------------------------------------------
@@ -481,15 +473,6 @@ def process_raw(raw, mrdHeader):
     # --------------------------------------------------
     print("Computing corrections...")
     phase_extractions = np.stack([phase_extraction(s, raw.noise.data.T) for s in S])
-    nx = mrdHeader.encoding[0].encodedSpace.matrixSize.x
-    # les TE sont dans le header.
-    # Par contre, le temps d'écho du navigateur n'est pas dans le header
-    # Il serait supposé être dans les user_int des acqs, mais quand on passe
-    # par FIRE, il est absent.
-    echo_times = np.array(mrdHeader.sequenceParameters.TE, dtype=np.float32) * 1e-3
-    print ("echo_times=", echo_times)
-    navigator_te = 24e-3
-    dt = raw.acquisitions[0].sample_time_us * 1e-6
 
     # Apply navigator correction
     print("Applying corrections...")
@@ -517,9 +500,7 @@ def process_raw(raw, mrdHeader):
     # Reshape back
     corrected = imgs_denoised[:, 0, :, :, :][np.newaxis, :, :, :, :] # (1, 4, 15, 384, 384) = (rep, echo, slice, y, x)
 
-    field_of_view = (ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.x), 
-                            ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.y), 
-                            ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.z))
+    field_of_view = (ctypes.c_float(FOV_x), ctypes.c_float(FOV_y), ctypes.c_float(FOV_z))
 
     header_map = {}
     for acq in raw.acquisitions:

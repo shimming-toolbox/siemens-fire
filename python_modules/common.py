@@ -36,7 +36,15 @@ class SiemensRAW:
         #self.dset = ismrmrd.Dataset(filename, "dataset")
         self.header = mrd_header
         #self.n_acq = self.dset.number_of_acquisitions()
-        n_echo = mrd_header.encoding[0].encodingLimits.contrast.maximum + 1
+        self.n_echo = mrd_header.encoding[0].encodingLimits.contrast.maximum + 1
+        self.n_slice = mrd_header.encoding[0].encodingLimits.slice.maximum + 1
+        self.n_kx = mrd_header.encoding[0].encodedSpace.matrixSize.x
+        self.n_ky = mrd_header.encoding[0].encodedSpace.matrixSize.y
+        self.n_kx_recon= mrd_header.encoding[0].reconSpace.matrixSize.x
+        self.echo_times = mrd_header.sequenceParameters.TE
+        self.FOV_x = mrd_header. encoding[0].reconSpace.fieldOfView_mm.x
+        self.FOV_y = mrd_header. encoding[0].reconSpace.fieldOfView_mm.y
+        self.FOV_z = mrd_header. encoding[0].reconSpace.fieldOfView_mm.z
 
         self.acquisitions: list[ismrmrd.Acquisition] = []
         self.acs_mask = None # assuming they are the same for every raw kspace
@@ -44,7 +52,7 @@ class SiemensRAW:
         self.navigator = None
         self.noise = None
 
-        self.navigator_detector = NavigatorDetector(n_echo)
+        self.navigator_detector = NavigatorDetector(self.n_echo)
 
     def reconstruct_images():
         pass
@@ -115,10 +123,6 @@ class SiemensRAW:
                 kspace[*idx, :, :] = data
                 if acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION) or acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING):
                     acs_mask[*idx, :, :] = True
-
-        #self.kspace = kspace
-        #self.navigator = navigator
-        #self.acs_mask = acs_mask
 
         return kspace, navigator, acs_mask
 
