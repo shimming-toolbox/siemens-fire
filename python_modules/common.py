@@ -1,6 +1,7 @@
 import ismrmrd
 import numpy as np
 import itertools
+import gc
 from ismrmrd import constants
 from collections import defaultdict
 
@@ -124,6 +125,7 @@ class SiemensRAW:
                 if acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION) or acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING):
                     acs_mask[*idx, :, :] = True
 
+        gc.collect
         return kspace, navigator, acs_mask
 
     def load_kspace(self, filename: str) -> None:

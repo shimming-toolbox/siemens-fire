@@ -18,6 +18,7 @@ from tempfile import mkdtemp
 from pathlib import Path
 import nibabel as nib
 import pandas as pd
+import gc
 from dipy.denoise.localpca import mppca
 
 from common import SiemensRAW, KSPACE_LAYOUT
@@ -457,6 +458,7 @@ def process_raw(raw, mrdHeader):
     target    = ["repetition", "kx", "kspace_encoding_step_1", "slice", "coil"]
     S = np.transpose(S, [remaining.index(n) for n in target])
 
+    del navigator
     # --------------------------------------------------
     # CENTERLINE MASKING on navigator lines
     # S[rep, samples, ky, sl, coil] — samples axis = nav readout
@@ -477,16 +479,41 @@ def process_raw(raw, mrdHeader):
     # Apply navigator correction
     print("Applying corrections...")
     field_estimates = field_conversion(phase_extractions, navigator_te) # rad/s
-    corrected = kspace_correction(kspace, field_estimates, nx, echo_times, dt)
+    del S, phase_extractions
 
-    # Use GRAPPA to fill in missing kspace lines
-    print("GRAPPA correction...")
-    corrected = grappa_reconstruction(corrected, corrected * acs_mask.squeeze())
+    print("Start processing slices sequentially to reduce memory usage")
+    # Store corrected images for all slices
+    corrected = None
 
-    # Preprocessing before sending it back to ICE
-    print("Reconstruction...")
-    corrected = raw_to_image(corrected)
-    corrected = mag_images(corrected)
+    # Reduce acs_mask dimension once
+    acs_mask = acs_mask.squeeze()
+
+    for sl in range(nSlice):
+        kspace_sl = kspace.squeeze()[:, [sl], ...]   # (4, 1, 384, 768, 24)
+        acs_sl = acs_mask[np.newaxis, :, [sl], ...]  # (1, 4, 1, 384, 768, 24)
+
+        print("Kspace correction...")
+        corrected_sl = kspace_correction(kspace_sl, field_estimates[:, :, [sl]], nx, echo_times, dt) # (1, 4, 1, 384, 768, 24)
+        del kspace_sl
+
+        # Use GRAPPA to fill in missing kspace lines
+        print("GRAPPA correction...")
+        corrected_sl = grappa_reconstruction(corrected_sl, corrected_sl * acs_sl)
+
+        print("Reconstruction...")
+        img_sl = raw_to_image(corrected_sl)
+        img_sl = mag_images(img_sl)
+        del corrected_sl, acs_sl
+
+        if corrected is None:
+            corrected = np.zeros(img_sl.shape[:2] + (nSlice,) + img_sl.shape[3:],
+                                dtype=img_sl.dtype)
+        corrected[:, :, sl] = img_sl[:, :, 0]
+        del img_sl
+        gc.collect()
+
+    del kspace
+    gc.collect()
 
     # Save images for faster testing
     # np.save("images.npy", images)
@@ -676,19 +703,15 @@ def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt):
     print("field_estimates.shape", field_estimates.shape)    # (1, 384, 15)  (1, lines, slices)
     print("echo_times.shape", echo_times.shape)     # (4,)  (echo,)
 
-    t = np.array([(j - n_samples/2)*dt for j in range(n_samples)], dtype=np.float32)
-    print("t.shape", t.shape) # (768,) (samples,)
-    t = np.repeat(t[:, np.newaxis], echo_times.shape[0], axis=1)
-    print("t.shape", t.shape) # (768, 4) (samples, echo)
-
-    t += echo_times # will probably crash
-    print("t.shape", t.shape) # (768, 4) (samples, echo)
+    t = np.array([(j - n_samples/2)*dt for j in range(n_samples)], dtype=np.float32) # (768,) (samples,)
+    t = np.repeat(t[:, np.newaxis], echo_times.shape[0], axis=1) # (768, 4) (samples, echo)
+    t += echo_times # will probably crash  # (768, 4) (samples, echo)
 
     demodulation = np.exp(-1j * np.einsum('rlp,je->replj', field_estimates, t)).astype(np.complex64)
     print("demodulation.shape", demodulation.shape) # (1, 4, 15, 384, 768) (1, echo, slices, lines, samples)
 
     # TODO: handle all the dimensions correctly instead of squeezing
-    corrected = raw_data.squeeze()*demodulation[..., np.newaxis] # (1, 4, 15, 384, 768, coils=(4,8,...)) (1, echo, slices, lines, samples, coils)
+    corrected = raw_data*demodulation[..., np.newaxis] # (1, 4, 1, 384, 768, coils=(4,8,...)) (1, echo, slices, lines, samples, coils)
     print("corrected.shape", corrected.shape)
     return corrected
  
