@@ -74,7 +74,7 @@ def process(connection, config, mrdHeader):
     finally:
         connection.send_close()
 
-def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, output_dir, raw):
+def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, output_dir, raw, CROP_SIZE):
     """
     Reconstruct reference volume from echo 0 and save as NIfTI.
     Slices are stored in anatomical order (inf→sup) for SCT centerline detection.
@@ -94,6 +94,7 @@ def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, outpu
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     ref_path = output_dir / "ref_echo0.nii.gz"
+    ref_path_full = output_dir / "ref_echo0_full.nii.gz"
 
     if ref_path.exists():
         print(f"Reference volume already present : {ref_path}")
@@ -124,15 +125,11 @@ def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, outpu
     kspace_restored = kspace_grappa[np.newaxis, np.newaxis, :, :, :, :]
     print(f"  kspace_restored.shape : {kspace_restored.shape}")
 
-    def coil_combination(data, coil_axis=-1):
-        return np.sqrt(np.sum(np.square(data), axis=coil_axis))
-
-    data = np.flip(kspace_restored, (3, 4)) # inverser les données en x et y for some reason
+    data = np.flip(kspace_restored, 4) # x axis inversion
     data = reconstruct_image(data)
-    data *= np.prod(data.shape) # FFT scaling, for consistency with ICE apparently
 
-    # RMS
-    data = coil_combination(data)
+    # Coil combination (RMS, coils_axis=-1)
+    data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
 
     # Remove readout oversampling by cropping
     images = remove_oversampling(data, 4)
@@ -140,20 +137,17 @@ def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, outpu
     images = mag_images(images)
     print(f"  images.shape : {images.shape}")
 
+    print("nKy=", nKy)
+    print("nKx_recon=", nKx_recon)
+
     # images : (1, 1, nSlice, nKy_recon, nKx_recon)
     images_slices = images[0, 0]   # (nSlice, nKy_recon, nKx_recon)
     print(f"  images_slices.shape : {images_slices.shape}")
 
-    nKy_recon  = images_slices.shape[1]
-    nKx_recon_ = images_slices.shape[2]
-
     # Crop parameters
-    CROP_SIZE = 150
     CROP_HALF = CROP_SIZE // 2
-    cx    = nKx_recon_ // 2
-    cy    = nKy_recon  // 2
-    x_lo  = cx - CROP_HALF
-    y_lo  = cy - CROP_HALF
+    x_lo  = (nKx_recon // 2) - CROP_HALF
+    y_lo  = (nKy // 2) - CROP_HALF
 
     # --------------------------------------------------
     # GET PHYSICAL SLICE POSITIONS → ANATOMICAL ORDER
@@ -164,10 +158,7 @@ def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, outpu
         if sl not in slice_z_positions:
             slice_z_positions[sl] = acq.position[2]
 
-    sorted_sl_indices = sorted(
-        slice_z_positions.keys(),
-        key=lambda sl: slice_z_positions[sl]
-    )
+    sorted_sl_indices = sorted(slice_z_positions, key=slice_z_positions.get)
 
     print(f"\n  Anatomical slice order :")
     for anat_idx, sl in enumerate(sorted_sl_indices):
@@ -179,6 +170,16 @@ def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, outpu
     # --------------------------------------------------
     n_sorted   = len(sorted_sl_indices)
     ref_volume = np.zeros((n_sorted, CROP_SIZE, CROP_SIZE), dtype=np.float32)
+    ref_volume_full = np.zeros((n_sorted, nKx_recon, nKy), dtype=np.float32)
+
+    # dz from physical slice positions — more reliable than FOV z / nSlice
+    # which gives slice thickness (5mm) not slice spacing
+    if len(sorted_sl_indices) > 1:
+        z0 = slice_z_positions[sorted_sl_indices[0]]
+        z1 = slice_z_positions[sorted_sl_indices[1]]
+        dz = abs(z1 - z0)
+    else:
+        dz = 5.0   # fallback
 
     for anat_idx, sl in enumerate(sorted_sl_indices):
         if sl >= images_slices.shape[0]:
@@ -191,26 +192,20 @@ def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, outpu
             y_lo : y_lo + CROP_SIZE,
             x_lo : x_lo + CROP_SIZE
         ]
-        
-        # dz from physical slice positions — more reliable than FOV z / nSlice
-        # which gives slice thickness (5mm) not slice spacing
-        if len(sorted_sl_indices) > 1:
-            z0 = slice_z_positions[sorted_sl_indices[0]]
-            z1 = slice_z_positions[sorted_sl_indices[1]]
-            dz = abs(z1 - z0)
-        else:
-            dz = 5.0   # fallback
+        ref_volume_full[anat_idx] = img_sl
 
     # --------------------------------------------------
     # FLIP y + SIMPLE DIAGONAL AFFINE (MRINavigator.jl convention)
     # y flip : SCT expects y=0 at top (radiological convention)
     # affine : voxel sizes only, no patient orientation
     # --------------------------------------------------
-    ref_volume_flipped = ref_volume[:, ::-1, :]
     affine = np.diag([-pixel_size_x, pixel_size_y, dz, 1.0]).astype(np.float32)
 
-    nii = nib.Nifti1Image(ref_volume_flipped.T, affine)
+    nii = nib.Nifti1Image(ref_volume.T, affine)
     nib.save(nii, str(ref_path))
+
+    nii_full = nib.Nifti1Image(ref_volume_full.T, affine)
+    nib.save(nii_full, str(ref_path_full))
 
     print(f"\nReference volume saved : {ref_path}")
     print(f"  shape={ref_volume.shape}  "
@@ -219,24 +214,35 @@ def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, outpu
     return ref_path
 
 
-def run_sct_centerline(output_dir, nKy, nKx_recon, nSlice):
+def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
     """
-    Run sct_get_centerline on the reference volume and save the centerline CSV.
-    Called after build_reference_volume() to detect the spinal cord centerline.
+    Segment the spinal cord with SCT deepseg on the cropped reference volume
+    (ref_echo0.nii.gz) and extract the center of mass of the
+    segmentation as the spinal cord center.
 
     Parameters
     ----------
-    output_dir : Path — directory containing ref_echo0.nii.gz
+    output_dir : Path
+        Directory containing ref_echo0.nii.gz.
+    nKy : int
+        Size of the full image in the y direction.
+    nKx_recon : int
+        Size of the full image in the x direction.
+    nSlice : int
+        Number of slices.
+    CROP_SIZE : int
+        Size of the cropped reference image.
 
     Returns
     -------
-    csv_path : Path — path to centerline CSV, or None if SCT failed
+    csv_path : Path or None
+        Path to the centerline CSV, or None if SCT failed.
     """
     import subprocess
 
     output_dir  = Path(output_dir)
     ref_path    = output_dir / "ref_echo0.nii.gz"
-    cl_nii_path = output_dir / "ref_echo0_centerline.nii.gz"
+    seg_path = output_dir / "ref_echo0_seg.nii.gz"
     csv_path    = output_dir / "ref_echo0_centerline.csv"
     csv_path_crop = output_dir / "ref_echo0_centerline_crop.csv"
 
@@ -248,87 +254,111 @@ def run_sct_centerline(output_dir, nKy, nKx_recon, nSlice):
         print(f"ERROR : reference volume not found : {ref_path}")
         return None
 
-    print(f"Running sct_get_centerline -c t2s ...")
+    print(f"Running sct_deepseg spinalcord ...")
     print(f"  Input  : {ref_path}")
-    print(f"  Output : {cl_nii_path}")
+    print(f"  Output : {seg_path}")
 
     result = subprocess.run(
-        [
-            "sct_get_centerline",
+        [   "sct_deepseg",
+            "spinalcord",
             "-i", str(ref_path.resolve()),
-            "-c", "t2s",
-            "-o", str(cl_nii_path.resolve()),
+            "-o", str(seg_path.resolve()),
         ],
-        capture_output=True, text=True
+        capture_output=True,
+        text=True
     )
 
     if result.returncode != 0:
-        print("SCT failed — check SCT installation and PATH")
+        print("SCT deepseg failed -> check SCT installation and PATH")
         return None
     
-    # Find SCT output CSV
-    sct_csv = output_dir / "ref_echo0_centerline.csv"
-
-    if not sct_csv.exists():
-        # SCT sometimes appends _centerline to the output name
-        sct_csv = output_dir / "ref_echo0_centerline_centerline.csv"
-
-    if not sct_csv.exists():
-        print(f"SCT CSV not found. Files in output_dir :")
-        for f in output_dir.glob("*"):
-            print(f"  {f.name}")
+    # Find SCT output segmentation
+    if not seg_path.exists():
+        print(f"SCT segmentation not found : {seg_path}")
         return None
 
-    # # Print raw SCT output for verification
-    df = pd.read_csv(sct_csv, header=None, names=["x", "y", "z"])
-    print(f"\nRaw SCT output ({len(df)} points) :")
-    print(df.to_string())
+    # Load segmentation
+    seg_img = nib.load(seg_path)
+    seg_mask = seg_img.get_fdata()
+
+    # Check that segmentation and reference have same shape
+    if seg_mask.shape != nib.load(ref_path).shape:
+        print("ERROR : segmentation and reference volume shapes differ.")
+        return None
+
+    # Extract centerline from segmentation
+    print("\n=== Extracting spinal cord centerline ===")
+    centerline = []
+
+    for z in range(nSlice):
+
+        # Binary spinal cord mask for current slice
+        mask = seg_mask[:, :, z] > 0
+
+        if not np.any(mask):
+            print(f"  WARNING : no spinal cord detected at slice z={z}")
+            continue
+
+        x_coords, y_coords = np.where(mask)
+
+        # Center of mass of the segmented spinal cord
+        x_center = np.mean(x_coords)
+        y_center = np.mean(y_coords)
+
+        centerline.append((x_center, y_center, z))
+
+        print(f" z={z:2d} → center_crop=({x_center:.1f}, {y_center:.1f})")
+
+    if len(centerline) == 0:
+        print("ERROR : no spinal cord detected in segmentation.")
+        return None
     
-    # --------------------------------------------------
-    # COORDINATE TRANSFORMATION → original image space
-    # SCT output is in cropped (150×150) y-flipped volume
-    # 1. x_img = SCT_x + x_lo_crop
-    # 2. y_img = nKy - (SCT_y + y_lo_crop)
-    # --------------------------------------------------
-    CROP_SIZE = 150
+    # Crop coordinates
     CROP_HALF = CROP_SIZE // 2
-    cx        = nKx_recon // 2
-    cy        = nKy // 2
-    x_lo_crop = cx - CROP_HALF
-    y_lo_crop = cy - CROP_HALF
+    x_lo_crop = (nKx_recon // 2) - CROP_HALF
+    y_lo_crop = (nKy // 2) - CROP_HALF
+
+    print("\n=== Crop → full image coordinate transformation ===")
+    print(f"  CROP_SIZE = {CROP_SIZE}")
+    print(f"  x_lo_crop = {x_lo_crop}")
+    print(f"  y_lo_crop = {y_lo_crop}")
 
     # --------------------------------------------------
-    # CSV 1 — cropped volume space (raw SCT output)
-    # Coordinates in the 150×150 y-flipped cropped volume
-    # Useful for debugging and visualizing on ref_echo0.nii.gz
+    # CSV 1 — cropped image space
     # --------------------------------------------------
     with open(csv_path_crop, "w") as f:
-        f.write("x_crop,y_crop,z_anat\n")   # header for readability
-        for _, row in df.head(nSlice).iterrows():
-            z_sl = int(round(row["z"]))
-            f.write(f"{row['x']:.4f},{row['y']:.4f},{z_sl}\n")
+        f.write("x_crop,y_crop,z_anat\n")
 
-    print(f"\nCenterline in cropped image space CSV saved : {csv_path_crop}")
-    print(f"  (coordinates in 150×150 y-flipped cropped volume)")
+        for x_crop, y_crop, z in centerline:
+            f.write(
+                f"{x_crop:.4f},{y_crop:.4f},{z}\n"
+            )
+
+    print(f"\nCenterline in cropped image space saved :{csv_path_crop}")
 
     # --------------------------------------------------
-    # CSV 2 — original image space (transformed)
-    # Coordinates in the full 384×384 image
-    # Used by apply_nav_mask_from_centerline in the pipeline
+    # CSV 2 — full image space
     # --------------------------------------------------
-    print(f"\n=== Coordinate transformation → original image space ===")
-    print(f"  x_lo_crop={x_lo_crop}, y_lo_crop={y_lo_crop}, nKy={nKy}")
-
     with open(csv_path, "w") as f:
-        for _, row in df.head(nSlice).iterrows():
-            z_sl  = int(round(row["z"]))
-            x_img = row["x"] + x_lo_crop
-            y_img = nKy - (row["y"] + y_lo_crop)
-            f.write(f"{x_img:.4f},{y_img:.4f},{z_sl}\n")
-            print(f"  z={z_sl:2d} → crop({row['x']:.0f},{row['y']:.0f}) "
-                  f"→ img({x_img:.1f},{y_img:.1f})")
 
-    print(f"\nCenterline in full image space CSV saved : {csv_path}")
+        for x_crop, y_crop, z in centerline:
+
+            # No flip is applied here because ref_echo0.nii.gz
+            # was not flipped before being given to SCT.
+            x_img = x_crop + x_lo_crop
+            y_img = y_crop + y_lo_crop
+
+            f.write(
+                f"{x_img:.4f},{y_img:.4f},{z}\n"
+            )
+
+            print(
+                f"  z={z:2d} → "
+                f"crop({x_crop:.1f},{y_crop:.1f}) → "
+                f"img({x_img:.1f},{y_img:.1f})"
+            )
+
+    print(f"\nCenterline in full image space saved : {csv_path}")
 
     return csv_path
 
@@ -410,13 +440,14 @@ def process_raw(raw, mrdHeader):
     # --------------------------------------------------
     # Build reference volume and save it under NifTi
     CENTERLINE_DIR = Path("/workspaces/siemens-fire/Icesimu_output/sct_centerline")
+    CROP_SIZE = 150
 
-    ref_path = build_reference_volume(kspace, acs_mask, nKy, nkx_recon, FOV_x, FOV_y, CENTERLINE_DIR, raw)
+    ref_path = build_reference_volume(kspace, acs_mask, nKy, nkx_recon, FOV_x, FOV_y, CENTERLINE_DIR, raw, CROP_SIZE)
     print(f"Reference volume ready : {ref_path}")
     print("SCT centerline detection will now be run on this volume.")
 
     # Run SCT centerline detection — results saved to CENTERLINE_DIR for inspection
-    csv_path = run_sct_centerline(CENTERLINE_DIR, nKy, nkx_recon, nSlice)
+    csv_path = run_sct_deepseg(CENTERLINE_DIR, nKy, nkx_recon, nSlice, CROP_SIZE)
 
     if csv_path is not None:
         print(f"Centerline detection successful : {csv_path}")
