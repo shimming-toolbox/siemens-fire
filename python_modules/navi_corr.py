@@ -574,15 +574,15 @@ def process_raw(raw, mrdHeader):
     return ismrmrd_images
 
 def mag_images(images):
-    return np.abs(images).astype(np.float64)
+    return np.abs(images)
 
-def convert_float64_to_int16(data):
+def convert_to_int16(data):
     return np.around(data * (2**12 - 1)/data.max()).astype(np.int16)
 
 def convert_to_ismrmrd_images(images, acq_headers, fov):
     images_out = []
     *_, y, x = images.shape
-    data = convert_float64_to_int16(images)
+    data = convert_to_int16(images)
     for i, img in enumerate(data.reshape(-1, y, x)):
         ismrmrd_image = ismrmrd.Image.from_array(img, transpose=False)
         ismrmrd_image.setHead(mrdhelper.update_img_header_from_raw(ismrmrd_image.getHead(), acq_headers[i]))
