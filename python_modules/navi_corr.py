@@ -612,7 +612,7 @@ def raw_to_image(raw, nKx, nKx_recon, noise_data=None):
 
 def remove_oversampling(data, nKx, nKx_recon, readout_axis):
     start = (nKx - nKx_recon) // 2
-
+    
     return data.take(np.arange(start, start+nKx_recon), axis=readout_axis)
 
 def coil_combination_Inati(data, noise_data=None, smoothing=5, niter=3):
@@ -635,40 +635,37 @@ def coil_combination_Inati(data, noise_data=None, smoothing=5, niter=3):
     -------
     combined (rep, echo, slice, y, x): magnitude combined image
     """
-    rep, echo, slc, y, x, nCoils = data.shape
+    data = data[0, :, 0, ...]
+    echo,  y, x, _ = data.shape
 
-    # Prewhitening matrix from noise scan
+    # Prewhitening matrix
     if noise_data is not None:
         dmtx = coils.calculate_prewhitening(noise_data)
-        print(f"  Prewhitening matrix computed : shape={np.asarray(dmtx).shape}")
+        print(f"  Prewhitening matrix computed: shape={np.asarray(dmtx).shape}")
     else:
         dmtx = None
 
-    combined = np.zeros((rep, echo, slc, y, x), dtype=np.float32)
+    combined = np.zeros((echo, y, x), dtype=np.float32)
 
-    for r in range(rep):
-        for e in range(echo):
-            for s in range(slc):
-                # Extract coil images : (y, x, nCoils) → (nCoils, y, x)
-                img_coils = np.moveaxis(data[r, e, s], -1, 0)
+    for e in range(echo):
+        # Extract coil images : (y, x, nCoils) → (nCoils, y, x)
+        img_coils = np.moveaxis(data[e], -1, 0)
 
-                # Prewhitening
-                if dmtx is not None:
-                    img_coils = coils.apply_prewhitening(img_coils, dmtx)
+        # Prewhitening
+        if dmtx is not None:
+            img_coils = coils.apply_prewhitening(img_coils, dmtx)
 
-                # Inati returns (csm, combined_image) directly
-                _, combined_complex = coils.calculate_csm_inati_iter(
-                    img_coils,
-                    smoothing = smoothing,
-                    niter     = niter,
-                    thresh    = 1e-3
-                )
+        # Inati CSM estimation + combination
+        _, combined_complex = coils.calculate_csm_inati_iter(
+            img_coils,
+            smoothing=smoothing,
+            niter=niter,
+            thresh=1e-3
+        )
 
-                # Magnitude
-                combined[r, e, s] = np.abs(combined_complex)
+        combined[e] = np.abs(combined_complex)
 
-    return combined
-
+    return combined[None, :, None, ...]
 
 def reconstruct_image(kspace, axes=(3, 4)):
     # First ifftshift, because numpy assumes the DC component to be at index 0.
