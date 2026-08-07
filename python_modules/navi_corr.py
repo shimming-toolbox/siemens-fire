@@ -362,7 +362,7 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
 
     return csv_path
 
-def apply_nav_mask_from_centerline(S, center_x_per_slice, nKx_recon, width=35):
+def apply_nav_mask_from_centerline(S, center_x_per_slice, nSlice, nKx, nKx_recon, width=35):
     """
     Apply spatial masks to all navigator lines around the spinal cord centerline.
     Navigators are FFT'd to spatial domain, masked per slice, and returned masked.
@@ -373,20 +373,17 @@ def apply_nav_mask_from_centerline(S, center_x_per_slice, nKx_recon, width=35):
     width (int): half-width of mask in navigator spatial domain
     """
 
-    N = S.shape[1]        # samples axis (navigator readout, with oversampling)
-    nSlice = S.shape[3]
-
     # FFT to spatial domain: one batched FFT over the samples axis
     nav_spatial = np.fft.fftshift(np.fft.fft(S, axis=1), axes=1)
    
     # Build (samples, sl) mask
-    mask = np.zeros((N, nSlice))
+    mask = np.zeros((nKx, nSlice))
     for sl, x_img in center_x_per_slice.items():
         # Scale x_img (image coords) to navigator spatial domain
-        x_center = int(x_img / nKx_recon * N)
+        x_center = int(x_img / nKx_recon * nKx)
         # Rectangular mask
         lo = max(0, x_center - width)
-        hi = min(N, x_center + width)
+        hi = min(nKx, x_center + width)
         mask[lo:hi, sl] = 1
 
     # Broadcast (samples, sl) → (rep, samples, ky, sl, coil)
@@ -400,9 +397,9 @@ def process_raw(raw, mrdHeader):
     acq_metadata=SiemensRAW(mrdHeader)
     nEcho = acq_metadata.n_echo
     nSlice = acq_metadata.n_slice
-    nx = acq_metadata.n_kx
+    nKx = acq_metadata.n_kx
     nKy =  acq_metadata.n_ky
-    nkx_recon = acq_metadata.n_kx_recon
+    nKx_recon = acq_metadata.n_kx_recon
     echo_times = np.array(acq_metadata.echo_times, dtype=np.float32) * 1e-3 
     FOV_x = acq_metadata.FOV_x
     FOV_y = acq_metadata.FOV_y
@@ -442,12 +439,12 @@ def process_raw(raw, mrdHeader):
     CENTERLINE_DIR = Path("/workspaces/siemens-fire/Icesimu_output/sct_centerline")
     CROP_SIZE = 150
 
-    ref_path = build_reference_volume(kspace, acs_mask, nKy, nkx_recon, FOV_x, FOV_y, CENTERLINE_DIR, raw, CROP_SIZE)
+    ref_path = build_reference_volume(kspace, acs_mask, nKy, nKx_recon, FOV_x, FOV_y, CENTERLINE_DIR, raw, CROP_SIZE)
     print(f"Reference volume ready : {ref_path}")
     print("SCT centerline detection will now be run on this volume.")
 
     # Run SCT centerline detection — results saved to CENTERLINE_DIR for inspection
-    csv_path = run_sct_deepseg(CENTERLINE_DIR, nKy, nkx_recon, nSlice, CROP_SIZE)
+    csv_path = run_sct_deepseg(CENTERLINE_DIR, nKy, nKx_recon, nSlice, CROP_SIZE)
 
     if csv_path is not None:
         print(f"Centerline detection successful : {csv_path}")
@@ -498,7 +495,7 @@ def process_raw(raw, mrdHeader):
     # --------------------------------------------------
     if use_mask:
         print("Applying centerline mask to navigator...")
-        S = apply_nav_mask_from_centerline(S, center_x_per_slice, nkx_recon, width=35)
+        S = apply_nav_mask_from_centerline(S, center_x_per_slice, nSlice, nKx, nKx_recon, width=35)
         print("Centerline masking applied.")
 
     # --------------------------------------------------
@@ -524,7 +521,7 @@ def process_raw(raw, mrdHeader):
         acs_sl = acs_mask[np.newaxis, :, [sl], ...]  # (1, 4, 1, 384, 768, 24)
 
         print("Kspace correction...")
-        corrected_sl = kspace_correction(kspace_sl, field_estimates[:, :, [sl]], nx, echo_times, dt) # (1, 4, 1, 384, 768, 24)
+        corrected_sl = kspace_correction(kspace_sl, field_estimates[:, :, [sl]], nKx, echo_times, dt) # (1, 4, 1, 384, 768, 24)
         del kspace_sl
 
         # Use GRAPPA to fill in missing kspace lines
@@ -532,7 +529,7 @@ def process_raw(raw, mrdHeader):
         corrected_sl = grappa_reconstruction(corrected_sl, corrected_sl * acs_sl)
 
         print("Reconstruction...")
-        img_sl = raw_to_image(corrected_sl)
+        img_sl = raw_to_image(corrected_sl, nKx, nKx_recon)
         img_sl = mag_images(img_sl)
         del corrected_sl, acs_sl
 
@@ -596,7 +593,7 @@ def convert_to_ismrmrd_images(images, acq_headers, fov):
         images_out.append(ismrmrd_image)
     return images_out
 
-def raw_to_image(raw, noise_data=None):
+def raw_to_image(raw, nKx, nKx_recon, noise_data=None):
     # assumed shape : (repetitions, echoes, slices, y, x, coils)
     #                 (0          , 1     , 2,    , 3, 4, 5) 
 
@@ -609,16 +606,14 @@ def raw_to_image(raw, noise_data=None):
     data = coil_combination_Inati(data, noise_data=noise_data)
 
     # Remove readout oversampling by cropping
-    data = remove_oversampling(data, 4)
+    data = remove_oversampling(data, nKx, nKx_recon, 4)
 
     return data
 
-def remove_oversampling(data, readout_axis, oversampling_factor=2):
-    nx = data.shape[readout_axis]
-    recon_size = nx // oversampling_factor
-    start = (nx - recon_size) // 2
+def remove_oversampling(data, nKx, nKx_recon, readout_axis):
+    start = (nKx - nKx_recon) // 2
 
-    return data.take(np.arange(start, start+recon_size), axis=readout_axis)
+    return data.take(np.arange(start, start+nKx_recon), axis=readout_axis)
 
 def coil_combination_Inati(data, noise_data=None, smoothing=5, niter=3):
     """
