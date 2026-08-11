@@ -91,6 +91,79 @@ class SiemensRAW:
 
         self.acquisitions = [acq for i, acq in enumerate(self.acquisitions) if i not in indices_to_remove]
 
+    def get_phase_stabilization_references(self):
+        """
+        Extract phase stabilization reference acquisitions.
+
+        FIRE does not provide the ISMRMRD phase stabilization flag.
+        The references are therefore identified as the first
+        n_slices * (n_echoes + 1) acquisitions of the repetition.
+        """
+        from collections import Counter
+
+        _, _, _, _, n_echoes, n_slices, _, _, _, _ = self._get_kspace_dims()
+
+        n_ref_per_rep = n_slices * (n_echoes + 1)
+
+        phase_stab = self.acquisitions[:n_ref_per_rep]
+
+        print("\n" + "=" * 70)
+        print("PHASE STABILIZATION REFERENCES")
+        print("=" * 70)
+
+        print(f"Number of slices          : {n_slices}")
+        print(f"Number of imaging echoes  : {n_echoes}")
+        print(f"Expected references       : {n_ref_per_rep}")
+        print(f"References found          : {len(phase_stab)}")
+
+        # --------------------------------------------------
+        # Data shape
+        # --------------------------------------------------
+        shapes = Counter(tuple(acq.data.shape) for acq in phase_stab)
+
+        print("\nData shapes:")
+        for shape, count in shapes.items():
+            print(f"  {shape} : {count} acquisitions")
+
+        # --------------------------------------------------
+        # Acquisition indices
+        # --------------------------------------------------
+        slices = [acq.idx.slice for acq in phase_stab]
+        repetitions = [acq.idx.repetition for acq in phase_stab]
+
+        print("\nIndices:")
+        print(f"  Slices      : {sorted(set(slices))}")
+        print(f"  Repetitions : {sorted(set(repetitions))}")
+
+        # --------------------------------------------------
+        # Print available EncodingCounters fields
+        # --------------------------------------------------
+        print("\nEncodingCounters fields:")
+
+        print(
+            [name for name in dir(phase_stab[0].idx)
+            if not name.startswith("_")]
+        )
+
+        # --------------------------------------------------
+        # First references
+        # --------------------------------------------------
+        print("\nFirst phase stabilization references:")
+
+        for i, acq in enumerate(phase_stab[:15]):
+
+            print(
+                f"  [{i:2d}] "
+                f"slice={acq.idx.slice:2d}, "
+                f"rep={acq.idx.repetition:2d}, "
+                f"shape={acq.data.shape}, "
+                f"sample_time_us={acq.sample_time_us}"
+            )
+
+        print("=" * 70 + "\n")
+
+        return phase_stab
+
     def build_kspace(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         dims = self._get_kspace_dims()
 
@@ -99,7 +172,9 @@ class SiemensRAW:
         navigator = np.zeros(dims[:4] + (1,) + dims[5:], dtype=np.complex64)
         # Only need one contrast dimension for navigator
         #navigator = navigator[:, :, :, :, [0], :, :, :, :, :]
-        acs_mask = np.zeros_like(kspace, dtype=bool)
+        ky_dim = KSPACE_LAYOUT.index("kspace_encoding_step_1")
+        acs_lines = np.zeros(dims[ky_dim], dtype=bool)
+        print("acs_lines.shape", acs_lines.shape)
 
         used_idx = set()
         for i in range(len(self.acquisitions)):
@@ -123,10 +198,10 @@ class SiemensRAW:
             else:
                 kspace[*idx, :, :] = data
                 if acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION) or acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING):
-                    acs_mask[*idx, :, :] = True
+                    acs_lines[idx[ky_dim]] = True
 
         gc.collect
-        return kspace, navigator, acs_mask
+        return kspace, navigator, acs_lines
 
     def load_kspace(self, filename: str) -> None:
         data = np.load(filename)

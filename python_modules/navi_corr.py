@@ -74,7 +74,7 @@ def process(connection, config, mrdHeader):
     finally:
         connection.send_close()
 
-def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, output_dir, raw, CROP_SIZE):
+def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, output_dir, raw, CROP_SIZE):
     """
     Reconstruct reference volume from echo 0 and save as NIfTI.
     Slices are stored in anatomical order (inf→sup) for SCT centerline detection.
@@ -109,30 +109,30 @@ def build_reference_volume(kspace, acs_mask, nKy, nKx_recon, fov_x, fov_y, outpu
     # GRAPPA RECONSTRUCTION ON ECHO 0
     # --------------------------------------------------
     kspace_ec0   = kspace[:, :, :, :, [0], :, :, :, :, :]
-    acs_mask_ec0 = acs_mask[:, :, :, :, [0], :, :, :, :, :]
 
     # squeeze (rep, phase, set, segment, echo, kz) → (nSlice, nKy, nKx, nCoils)
     squeeze_axes = (0, 1, 2, 3, 4, 6)
-    kspace_sq    = np.squeeze(kspace_ec0,   axis=squeeze_axes)
-    acs_mask_sq  = np.squeeze(acs_mask_ec0, axis=squeeze_axes)
+    kspace_ec0    = np.squeeze(kspace_ec0,   axis=squeeze_axes)
 
-    print(f"  kspace_sq.shape : {kspace_sq.shape}")
+    print(f"  kspace_sq.shape : {kspace_ec0.shape}")
 
-    kspace_grappa = grappa_reconstruction(kspace_sq, kspace_sq * acs_mask_sq)
+    kspace_grappa = grappa_reconstruction(kspace_ec0, acs_mask)
     print(f"  kspace_grappa.shape : {kspace_grappa.shape}")
+    del kspace_ec0
 
     # Restore to (rep=1, echo=1, slice, y, x, coils) for raw_to_image
-    kspace_restored = kspace_grappa[np.newaxis, np.newaxis, :, :, :, :]
-    print(f"  kspace_restored.shape : {kspace_restored.shape}")
+    kspace_grappa = kspace_grappa[np.newaxis, np.newaxis, :, :, :, :]
+    print(f"  kspace_restored.shape : {kspace_grappa.shape}")
 
-    data = np.flip(kspace_restored, 4) # x axis inversion
+    data = np.flip(kspace_grappa, 4) # x axis inversion
     data = reconstruct_image(data)
+    del kspace_grappa
 
     # Coil combination (RMS, coils_axis=-1)
     data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
 
     # Remove readout oversampling by cropping
-    images = remove_oversampling(data, 4)
+    images = remove_oversampling(data, nKx, nKx_recon, 4)
 
     images = mag_images(images)
     print(f"  images.shape : {images.shape}")
@@ -426,7 +426,6 @@ def process_raw(raw, mrdHeader):
     kspace, navigator, acs_mask = raw.build_kspace()
     kspace = kspace[[rep_index], ...]           # (1, 1, 1, 1, nEcho=4, nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
     navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
-    acs_mask = acs_mask[[rep_index], ...]       # same as kspace
 
     # Save it for tests
     #raw.save_kspace("ice_data.npz")
@@ -439,7 +438,7 @@ def process_raw(raw, mrdHeader):
     CENTERLINE_DIR = Path("/workspaces/siemens-fire/Icesimu_output/sct_centerline")
     CROP_SIZE = 150
 
-    ref_path = build_reference_volume(kspace, acs_mask, nKy, nKx_recon, FOV_x, FOV_y, CENTERLINE_DIR, raw, CROP_SIZE)
+    ref_path = build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, FOV_x, FOV_y, CENTERLINE_DIR, raw, CROP_SIZE)
     print(f"Reference volume ready : {ref_path}")
     print("SCT centerline detection will now be run on this volume.")
 
@@ -513,12 +512,8 @@ def process_raw(raw, mrdHeader):
     # Store corrected images for all slices
     corrected = None
 
-    # Reduce acs_mask dimension once
-    acs_mask = acs_mask.squeeze()
-
     for sl in range(nSlice):
         kspace_sl = kspace.squeeze()[:, [sl], ...]   # (4, 1, 384, 768, 24)
-        acs_sl = acs_mask[np.newaxis, :, [sl], ...]  # (1, 4, 1, 384, 768, 24)
 
         print("Kspace correction...")
         corrected_sl = kspace_correction(kspace_sl, field_estimates[:, :, [sl]], nKx, echo_times, dt) # (1, 4, 1, 384, 768, 24)
@@ -526,12 +521,12 @@ def process_raw(raw, mrdHeader):
 
         # Use GRAPPA to fill in missing kspace lines
         print("GRAPPA correction...")
-        corrected_sl = grappa_reconstruction(corrected_sl, corrected_sl * acs_sl)
+        corrected_sl = grappa_reconstruction(corrected_sl, acs_mask)
 
         print("Reconstruction...")
         img_sl = raw_to_image(corrected_sl, nKx, nKx_recon)
         img_sl = mag_images(img_sl)
-        del corrected_sl, acs_sl
+        del corrected_sl
 
         if corrected is None:
             corrected = np.zeros(img_sl.shape[:2] + (nSlice,) + img_sl.shape[3:],
@@ -743,7 +738,6 @@ def grappa_reconstruction(kspace, acs_lines, R=2, kernel_size=(5, 5)):
     *leading, y, x, c = kspace.shape
 
     kspace_r   = kspace.reshape(-1, y, x, c)
-    acs_mask_r = acs_lines.reshape(-1, y, x, c)
 
     results = np.memmap(
         os.path.join(mkdtemp(), 'grappa.dat'),
@@ -754,13 +748,11 @@ def grappa_reconstruction(kspace, acs_lines, R=2, kernel_size=(5, 5)):
     for i in range(kspace_r.shape[0]):
         # kspace_r[i]   : (nKy, nKx, nCoils) → reorder to (nCoils, nKy, nKx)
         k_coils   = np.moveaxis(kspace_r[i],   -1, 0)   # (nCoils, nKy, nKx)
-        acs_coils = np.moveaxis(acs_mask_r[i], -1, 0)   # (nCoils, nKy, nKx)
 
         # Extract ACS line indices from mask
-        # acs_coils[0] is boolean mask of shape (nKy, nKx)
+        # acs_lines[0] is boolean mask of shape (nKy,)
         # ACS lines are those where the entire ky line is non-zero
-        acs_line_mask = np.any(np.abs(acs_coils[0]) > 1e-8, axis=-1)
-        acs_idx       = np.where(acs_line_mask)[0]   # (nACS,)
+        acs_idx = np.where(acs_lines)[0]
 
         if len(acs_idx) == 0:
             print(f"  WARNING : no ACS lines found for batch {i}")
@@ -772,7 +764,7 @@ def grappa_reconstruction(kspace, acs_lines, R=2, kernel_size=(5, 5)):
 
         # Reorder back to (nKy, nKx, nCoils)
         results[i] = np.moveaxis(k_filled, 0, -1)
-
+    del kspace_r
     results.flush()
     return results.reshape(*leading, y, x, c)
 
