@@ -7,6 +7,13 @@
 		"context":    "../",
 	},
 
+	// .venv is its own volume in order to have our own .venv on host«
+	"mounts": [
+		"type=volume,src=siemens-fire-venv,dst=${containerWorkspaceFolder}/.venv"
+	],
+
+	"remoteUser": "dev",
+
 	// To enable your local GPUs in container if they are on enabled by default
 	// "runArgs": [ "--gpus=all" ],
 
