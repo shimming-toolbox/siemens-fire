@@ -9,6 +9,7 @@
             "name": "Start server",
             "type": "debugpy",
             "request": "launch",
+            "python": "/root/shimming-toolbox/python/bin/python",
             "program": "/opt/code/python-ismrmrd-server/main.py",
             "args": [
                 "-H", "0.0.0.0",
@@ -26,6 +27,7 @@
             "name": "Run client",
             "type": "debugpy",
             "request": "launch",
+            "python": "/root/shimming-toolbox/python/bin/python",
             "program": "/opt/code/python-ismrmrd-server/client.py",
             "args": [
                 "/opt/code/python-ismrmrd-server/data/shepplogan_raw.mrd",

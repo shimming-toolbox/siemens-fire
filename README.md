@@ -119,7 +119,7 @@ cd <path/to/repository>
 
 2. Build the Docker image
 ```bash
-docker build --platform linux/amd64 -t test_st .
+docker build -f docker/Dockerfile --platform linux/amd64 -t test_st .
 ```
 
 3. Start the server on a new terminal window
