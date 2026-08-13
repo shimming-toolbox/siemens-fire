@@ -67,9 +67,11 @@ FROM mrd_converter AS python-mrd-devcontainer
 
 # Add ST modules
 RUN mkdir -p /opt/code/siemens-fire
-COPY ./ ./opt/code/siemens-fire/
 WORKDIR /opt/code/siemens-fire
+COPY ./pyproject.toml ./uv.lock /opt/code/siemens-fire/
 RUN uv sync --frozen
+COPY ./python_modules /opt/code/siemens-fire/
+COPY ./scripts ./opt/code/siemens-fire/
 
 # Add dev user (for development purposes only)
 RUN groupadd -g 1000 dev && \
@@ -77,7 +79,8 @@ RUN groupadd -g 1000 dev && \
 
 # Set the st_masking module as the default module
 #CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate base && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]
-CMD /bin/bash
+#CMD /bin/bash
+CMD ["uv", "run", "scripts/run_server.py"]
 
 # Clean up to reduce image size
 RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
