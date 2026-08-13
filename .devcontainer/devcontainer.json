@@ -7,12 +7,12 @@
 		"context":    "../",
 	},
 
-	// .venv is its own volume in order to have our own .venv on host«
-	"mounts": [
-		"type=volume,src=siemens-fire-venv,dst=${containerWorkspaceFolder}/.venv"
-	],
 
 	"remoteUser": "dev",
+
+	"containerEnv": {
+		"UV_PROJECT_ENVIRONMENT": "/home/dev/venv"
+	},
 
 	// To enable your local GPUs in container if they are on enabled by default
 	// "runArgs": [ "--gpus=all" ],
@@ -25,7 +25,7 @@
 
 	// Default setting for Windows changes files to CRLF, so match this to avoid all files
 	// being marked as changed.  Could be disabled for non-Windows hosts
-	"postCreateCommand": "git config --global core.autocrlf true ; pip install ipykernel ; uv sync --frozen",
+	"postCreateCommand": "git config --global core.autocrlf true ; uv sync --frozen",
 
 	"customizations": {
 		"vscode": {
@@ -37,8 +37,8 @@
 				"ms-toolsai.jupyter"
 			],
 
-			"settings": { 
-				"terminal.integrated.defaultProfile.linux": "bash"
+			"settings": {
+				"python.defaultInterpreterPath": "/home/dev/venv/bin/python"
 			}
 		}
 	}
