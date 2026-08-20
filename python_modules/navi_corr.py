@@ -11,8 +11,8 @@ import xml.dom.minidom
 import base64
 import ctypes
 import re
-import ismrmrd_server.mrdhelper
-import ismrmrd_server.constants
+import ismrmrd_server.mrdhelper as mrdhelper
+import ismrmrd_server.constants as constants
 from time import perf_counter
 from tempfile import mkdtemp
 from pathlib import Path
@@ -56,6 +56,7 @@ def process(connection, config, mrdHeader):
             if isinstance(item, ismrmrd.Acquisition):
                 raw.add_acq(item)
             
+                # Process one repetition at the time (for now?)
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     images = process_raw(raw, mrdHeader)
                     connection.send_image(images)
