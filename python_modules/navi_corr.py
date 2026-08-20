@@ -392,7 +392,7 @@ def apply_nav_mask_from_centerline(S, center_x_per_slice, nSlice, nKx, nKx_recon
 
     return nav_masked
 
-def process_raw(raw, mrdHeader):
+def process_raw(raw, mrdHeader, use_memmap=False):
 
     # Metadata from ISMRMRD header
     acq_metadata=SiemensRAW(mrdHeader)
@@ -424,7 +424,7 @@ def process_raw(raw, mrdHeader):
 
     # Build kspace and navigator data structure
     print("Building kspace array...")
-    kspace, navigator, acs_mask = raw.build_kspace()
+    kspace, navigator, acs_mask = raw.build_kspace(use_memmap=use_memmap)
     kspace = kspace[[rep_index], ...]           # (1, 1, 1, 1, nEcho=4, nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
     navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
 
@@ -436,6 +436,7 @@ def process_raw(raw, mrdHeader):
 
     # --------------------------------------------------
     # Build reference volume and save it under NifTi
+    # TODO: Change this path to something else than workspaces
     CENTERLINE_DIR = Path("/workspaces/siemens-fire/Icesimu_output/sct_centerline")
     CROP_SIZE = 150
 
@@ -486,7 +487,6 @@ def process_raw(raw, mrdHeader):
     target    = ["repetition", "kx", "kspace_encoding_step_1", "slice", "coil"]
     S = np.transpose(S, [remaining.index(n) for n in target])
 
-    del navigator
     # --------------------------------------------------
     # CENTERLINE MASKING on navigator lines
     # S[rep, samples, ky, sl, coil] — samples axis = nav readout
@@ -503,45 +503,31 @@ def process_raw(raw, mrdHeader):
     # --------------------------------------------------
     print("Computing corrections...")
     phase_extractions = np.stack([phase_extraction(s, raw.noise.data.T) for s in S])
+    field_estimates = field_conversion(phase_extractions, navigator_te) # rad/s
 
     # Apply navigator correction
     print("Applying corrections...")
-    field_estimates = field_conversion(phase_extractions, navigator_te) # rad/s
-    del S, phase_extractions
-
     print("Start processing slices sequentially to reduce memory usage")
     # Store corrected images for all slices
-    corrected = None
 
-    for sl in range(nSlice):
-        kspace_sl = kspace.squeeze()[:, [sl], ...]   # (4, 1, 384, 768, 24)
+    if use_memmap:
+        filename = os.path.join(mkdtemp(), "corrected.dat")
+        corrected = np.memmap(filename, dtype=np.complex64, mode='w+', shape=kspace.shape)
 
-        print("Kspace correction...")
-        corrected_sl = kspace_correction(kspace_sl, field_estimates[:, :, [sl]], nKx, echo_times, dt) # (1, 4, 1, 384, 768, 24)
-        del kspace_sl
+    print("K-Space correction...")
+    corrected[:] = kspace_correction(kspace, field_estimates, nKx, echo_times, dt) # (1, 4, 1, 384, 768, 24)
 
-        # Use GRAPPA to fill in missing kspace lines
-        print("GRAPPA correction...")
-        corrected_sl = grappa_reconstruction(corrected_sl, acs_mask)
-
-        print("Reconstruction...")
-        img_sl = raw_to_image(corrected_sl, nKx, nKx_recon)
-        img_sl = mag_images(img_sl)
-        del corrected_sl
-
-        if corrected is None:
-            corrected = np.zeros(img_sl.shape[:2] + (nSlice,) + img_sl.shape[3:],
-                                dtype=img_sl.dtype)
-        corrected[:, :, sl] = img_sl[:, :, 0]
-        del img_sl
-        gc.collect()
-
-    del kspace
-    gc.collect()
+    # Use GRAPPA to fill in missing kspace lines
+    print("GRAPPA correction...")
+    corrected[:] = grappa_reconstruction(corrected, acs_mask)
+    print("Reconstruction...")
+    img = raw_to_image(corrected, nKx, nKx_recon)
+    img = mag_images(img)
 
     # Save images for faster testing
     # np.save("images.npy", images)
 
+    print("Denoising...")
     # Reshape for MPPCA : (nEcho, nRep, nSlice, nKy, nKx)
     imgs_for_denoise = corrected[0]   # (4, 15, 384, 384) = (echo, slice, y, x)
     imgs_for_denoise = imgs_for_denoise[:, np.newaxis, :, :, :] # (4, 1, 15, 384, 384) = (echo, rep, slice, y, x)
@@ -705,14 +691,9 @@ def phase_extraction(navigator, noise):
     return delta_phi
 
 def field_conversion(nav_phases, te_nav):
-    print ("nav_phases.shape=", nav_phases.shape) # (1, 384, 15)  (1, lines, slices)
     return nav_phases/te_nav    # rad/s
 
 def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt):
-    print("raw_data.shape", raw_data.shape)         # (1, 1, 1, 1, 4, 15, 1, 384, 768, coils=(4,8,...)) (1, 1, 1, 1, echo, slices, 1, lines, samples, coils)
-    print("field_estimates.shape", field_estimates.shape)    # (1, 384, 15)  (1, lines, slices)
-    print("echo_times.shape", echo_times.shape)     # (4,)  (echo,)
-
     t = np.array([(j - n_samples/2)*dt for j in range(n_samples)], dtype=np.float32) # (768,) (samples,)
     t = np.repeat(t[:, np.newaxis], echo_times.shape[0], axis=1) # (768, 4) (samples, echo)
     t += echo_times # will probably crash  # (768, 4) (samples, echo)
@@ -722,7 +703,6 @@ def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt):
 
     # TODO: handle all the dimensions correctly instead of squeezing
     corrected = raw_data*demodulation[..., np.newaxis] # (1, 4, 1, 384, 768, coils=(4,8,...)) (1, echo, slices, lines, samples, coils)
-    print("corrected.shape", corrected.shape)
     return corrected
  
 def grappa_reconstruction(kspace, acs_lines, R=2, kernel_size=(5, 5)):

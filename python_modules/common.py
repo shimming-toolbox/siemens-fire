@@ -1,9 +1,9 @@
 import ismrmrd
 import numpy as np
-import itertools
-import gc
 from ismrmrd import constants
 from collections import defaultdict
+from tempfile import mkdtemp
+import os
 
 EXCLUSION_FLAGS = [
     constants.ACQ_IS_NOISE_MEASUREMENT,
@@ -164,17 +164,21 @@ class SiemensRAW:
 
         return phase_stab
 
-    def build_kspace(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def build_kspace(self, use_memmap=False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         dims = self._get_kspace_dims()
 
-        kspace = np.zeros(dims, dtype=np.complex64)
+        if use_memmap:
+            filename = os.path.join(mkdtemp(), "kspace.dat")
+            kspace = np.memmap(filename, dtype=np.complex64, mode='w+', shape=dims)
+        else:
+            kspace = np.zeros(dims, dtype=np.complex64)
+
         # Navigator has same shape, except for the echoes
         navigator = np.zeros(dims[:4] + (1,) + dims[5:], dtype=np.complex64)
         # Only need one contrast dimension for navigator
         #navigator = navigator[:, :, :, :, [0], :, :, :, :, :]
         ky_dim = KSPACE_LAYOUT.index("kspace_encoding_step_1")
         acs_lines = np.zeros(dims[ky_dim], dtype=bool)
-        print("acs_lines.shape", acs_lines.shape)
 
         used_idx = set()
         for i in range(len(self.acquisitions)):
@@ -188,7 +192,10 @@ class SiemensRAW:
             # new shape: (samples, n_coils)
             data = data.T
 
+            # Index tuple used for the numpy array
             idx = tuple(getattr(acq.idx, d) for d in KSPACE_LAYOUT_IDX)
+
+            # Verify that we don't write same index twice
             if idx in used_idx and not (acq.idx.contrast == 0 and acq.scan_counter % 5 == 1):
                 raise IndexError(f"Index already filled: {idx}")
             used_idx.add(idx)
@@ -200,7 +207,6 @@ class SiemensRAW:
                 if acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION) or acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING):
                     acs_lines[idx[ky_dim]] = True
 
-        gc.collect
         return kspace, navigator, acs_lines
 
     def load_kspace(self, filename: str) -> None:
