@@ -684,32 +684,23 @@ def phase_extraction(navigator, noise):
     navigator -- shape : (j, l, p, c) -> (samples, lines, slices, coils)
     noise     -- shape : (j, c)       -> (samples, coils)
     """
-    print("navigator.shape", navigator.shape)   # (768, 384, 15, coils=(4,8,...))
-    print("noise.shape=", noise.shape)      # (768, coils=(4,8,...))
 
     # subtract first navigator phase to remove static phase contributions
     delta_S = (navigator * np.exp(-1j*np.angle(navigator[:, [0], :, :]))).astype(np.complex64)  # (samples=768, lines=384, slices=15, coils=(4,8,...))
-    print("delta_S.shape=", delta_S.shape)
 
     w = np.abs(delta_S) / np.std(noise, axis=0)   # (768, 384, 15, coils=(4,8,...))  (TODO: check if should need to raise to power 2)
-    print("w.shape=", w.shape)
     # RuntimeWarning here because of dividing by zero
     w_tilde = w/np.sum(w, axis=(0, 3), keepdims=True) # (768, 384, 15, coils=(4,8,...))
-    print("w_tilde.shape=", w_tilde.shape)
     # Replace resulting NaNs by zero
     w_tilde[np.isnan(w_tilde)] = 0.0
 
     delta_S = np.sum(w_tilde * delta_S, axis=(0, 3)) # (384, 15)  (lines, slices)
-    print("delta_S.shape=", delta_S.shape)
 
     delta_phi_mean = np.angle(np.mean(delta_S, axis=0)) # (15,)  (slices,)
-    print("delta_phi_mean.shape=", delta_phi_mean.shape)
 
     delta_S_tilde = delta_S * np.exp(-1j * delta_phi_mean) # (384, 15)  (lines, slices)
-    print("delta_S_tilde.shape=", delta_S_tilde.shape) 
 
     delta_phi = np.angle(delta_S_tilde) # (384, 15)  (lines, slices)
-    print("delta_phi.shape=", delta_phi.shape)
 
     return delta_phi
 
