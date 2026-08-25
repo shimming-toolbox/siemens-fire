@@ -44,10 +44,6 @@ def process(connection, config, mrdHeader):
     # Continuously parse incoming data parsed from MRD messages
     try:
         raw = SiemensRAW(mrdHeader)
-        # TEMP DEBUG
-        with open("acqs.pickle", 'rb') as f:
-            import pickle
-            connection = pickle.load(f)
         for item in connection:
             # ----------------------------------------------------------
             # Raw k-space data messages
@@ -428,28 +424,19 @@ def process_raw(raw, mrdHeader, use_memmap=False):
         dims = raw._get_kspace_dims()
         nav_dims = raw._get_nav_dims()
         img_dims = dims[:-1] # same shape, except coils
-        # TEMP, change to w+
-        kspace = np.memmap("kspace.dat", mode='r+', dtype=np.complex64, shape=dims)
-        navigator = np.memmap("navigator.dat", mode='r+', dtype=np.complex64, shape=nav_dims)
-        corrected = np.memmap("corrected.dat", mode='r+', dtype=np.complex64, shape=kspace.shape)
+        kspace = np.memmap("kspace.dat", mode='w+', dtype=np.complex64, shape=dims)
+        navigator = np.memmap("navigator.dat", mode='w+', dtype=np.complex64, shape=nav_dims)
+        corrected = np.memmap("corrected.dat", mode='w+', dtype=np.complex64, shape=kspace.shape)
         images = np.memmap("images.dat", mode='w+', dtype=np.float32, shape=img_dims)
     else:
         corrected = np.zeros_like(kspace)
         images = np.zeros(img_dims)
 
-    # TEMP DEBUG
-    #kspace, navigator, acs_mask = raw.build_kspace(kspace=kspace, navigator=navigator)
-    acs_mask = np.load("acs_mask.npy")
+    kspace, navigator, acs_mask = raw.build_kspace(kspace=kspace, navigator=navigator)
     raw.reset_acq()
 
     #kspace = kspace[[rep_index], ...]           # (1, 1, 1, 1, nEcho=4, nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
     #navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
-
-    # Save it for tests
-    #raw.save_kspace("ice_data.npz")
-    
-    # Load precomputed kspace
-    #raw.load_kspace("ice_data.npz")
 
     # --------------------------------------------------
     # Build reference volume and save it under NifTi
@@ -532,7 +519,6 @@ def process_raw(raw, mrdHeader, use_memmap=False):
     p_step = max(1, int(np.ceil(chunk_size * n_p)))
 
     for p_start in range(0, n_p, p_step):
-        break # TEMP: for faster testing
         p_end = min(p_start + p_step, n_p)
 
         for l_start in range(0, n_l, l_step):
@@ -553,7 +539,6 @@ def process_raw(raw, mrdHeader, use_memmap=False):
 
     # TODO: check for slicing chunks with GRAPPA
     for i in range(corrected.shape[0]):
-        break # TEMP faster debug
         corrected[i, :, :, :] = grappa_reconstruction(corrected[i], acs_mask)
     corrected = corrected.reshape(*leading, y, x, c)
 
@@ -566,7 +551,6 @@ def process_raw(raw, mrdHeader, use_memmap=False):
     coil_step = max(1, int(np.ceil(chunk_size * n_coil)))
 
     for echo_start in range(0, n_echo, echo_step):
-        break # TEMP
         echo_end = min(echo_start + echo_step, n_echo)
         for slice_start in range(0, n_slice, slice_step):
             slice_end = min(slice_start + slice_step, n_slice)
@@ -591,7 +575,8 @@ def process_raw(raw, mrdHeader, use_memmap=False):
     #corrected[:] = coil_combination_Inati(corrected, noise_data=None)
 
     # Remove readout oversampling by cropping
-    images[:] = remove_oversampling(images, nKx, nKx_recon, 3)
+    # new memmap needed here?
+    images = remove_oversampling(images, nKx, nKx_recon, 3)
 
     # USELESS?
     #img = mag_images(img)
