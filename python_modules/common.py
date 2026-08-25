@@ -4,6 +4,7 @@ from ismrmrd import constants
 from collections import defaultdict
 from tempfile import mkdtemp
 import os
+import dask.array as da
 
 EXCLUSION_FLAGS = [
     constants.ACQ_IS_NOISE_MEASUREMENT,
@@ -32,6 +33,8 @@ KSPACE_LAYOUT_IDX = [
     "kspace_encode_step_1",
 ]
 
+KSPACE_USED_IDX = [4, 5, 7] # (contrast, slice, kspace_encode_step_1)
+
 class SiemensRAW:
     def __init__(self, mrd_header) -> None:
         #self.dset = ismrmrd.Dataset(filename, "dataset")
@@ -55,9 +58,6 @@ class SiemensRAW:
 
         self.navigator_detector = NavigatorDetector(self.n_echo)
 
-    def reconstruct_images():
-        pass
-
     def add_acq(self, acq: ismrmrd.Acquisition) -> None:
         self.acquisitions.append(acq)
 
@@ -80,8 +80,9 @@ class SiemensRAW:
         # of ISMRMRD_ACQ_IS_PHASE_STABILIZATION_REFERENCE acquisitions. The +1
         # is for the phase stabilization acq, labeled as echo=0.
 
-        _, _, _, _, n_echoes, n_slices, _, _, _, _ = self._get_kspace_dims()
-        n_echoes += 1 # fifth echo for phase stabilization
+        #_, _, _, n_echoes, n_slices, _, _, _, _ = self._get_kspace_dims()
+        n_slices = self.n_slice
+        n_echoes = self.n_echo + 1 # fifth echo for phase stabilization
 
         # TODO: verify this for each repetition
         a = 0
@@ -91,93 +92,19 @@ class SiemensRAW:
 
         self.acquisitions = [acq for i, acq in enumerate(self.acquisitions) if i not in indices_to_remove]
 
-    def get_phase_stabilization_references(self):
-        """
-        Extract phase stabilization reference acquisitions.
-
-        FIRE does not provide the ISMRMRD phase stabilization flag.
-        The references are therefore identified as the first
-        n_slices * (n_echoes + 1) acquisitions of the repetition.
-        """
-        from collections import Counter
-
-        _, _, _, _, n_echoes, n_slices, _, _, _, _ = self._get_kspace_dims()
-
-        n_ref_per_rep = n_slices * (n_echoes + 1)
-
-        phase_stab = self.acquisitions[:n_ref_per_rep]
-
-        print("\n" + "=" * 70)
-        print("PHASE STABILIZATION REFERENCES")
-        print("=" * 70)
-
-        print(f"Number of slices          : {n_slices}")
-        print(f"Number of imaging echoes  : {n_echoes}")
-        print(f"Expected references       : {n_ref_per_rep}")
-        print(f"References found          : {len(phase_stab)}")
-
-        # --------------------------------------------------
-        # Data shape
-        # --------------------------------------------------
-        shapes = Counter(tuple(acq.data.shape) for acq in phase_stab)
-
-        print("\nData shapes:")
-        for shape, count in shapes.items():
-            print(f"  {shape} : {count} acquisitions")
-
-        # --------------------------------------------------
-        # Acquisition indices
-        # --------------------------------------------------
-        slices = [acq.idx.slice for acq in phase_stab]
-        repetitions = [acq.idx.repetition for acq in phase_stab]
-
-        print("\nIndices:")
-        print(f"  Slices      : {sorted(set(slices))}")
-        print(f"  Repetitions : {sorted(set(repetitions))}")
-
-        # --------------------------------------------------
-        # Print available EncodingCounters fields
-        # --------------------------------------------------
-        print("\nEncodingCounters fields:")
-
-        print(
-            [name for name in dir(phase_stab[0].idx)
-            if not name.startswith("_")]
-        )
-
-        # --------------------------------------------------
-        # First references
-        # --------------------------------------------------
-        print("\nFirst phase stabilization references:")
-
-        for i, acq in enumerate(phase_stab[:15]):
-
-            print(
-                f"  [{i:2d}] "
-                f"slice={acq.idx.slice:2d}, "
-                f"rep={acq.idx.repetition:2d}, "
-                f"shape={acq.data.shape}, "
-                f"sample_time_us={acq.sample_time_us}"
-            )
-
-        print("=" * 70 + "\n")
-
-        return phase_stab
-
-    def build_kspace(self, use_memmap=False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def build_kspace(self, kspace=None, navigator=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         dims = self._get_kspace_dims()
+        nav_dims = self._get_nav_dims()
 
-        if use_memmap:
-            filename = os.path.join(mkdtemp(), "kspace.dat")
-            kspace = np.memmap(filename, dtype=np.complex64, mode='w+', shape=dims)
-        else:
+        if kspace is None:
             kspace = np.zeros(dims, dtype=np.complex64)
 
         # Navigator has same shape, except for the echoes
-        navigator = np.zeros(dims[:4] + (1,) + dims[5:], dtype=np.complex64)
+        if navigator is None:
+            navigator = np.zeros(nav_dims, dtype=np.complex64)
         # Only need one contrast dimension for navigator
         #navigator = navigator[:, :, :, :, [0], :, :, :, :, :]
-        ky_dim = KSPACE_LAYOUT.index("kspace_encoding_step_1")
+        ky_dim = KSPACE_USED_IDX.index(KSPACE_LAYOUT.index("kspace_encoding_step_1"))
         acs_lines = np.zeros(dims[ky_dim], dtype=bool)
 
         used_idx = set()
@@ -193,7 +120,7 @@ class SiemensRAW:
             data = data.T
 
             # Index tuple used for the numpy array
-            idx = tuple(getattr(acq.idx, d) for d in KSPACE_LAYOUT_IDX)
+            idx = tuple(getattr(acq.idx, d) for i, d in enumerate(KSPACE_LAYOUT_IDX) if i in KSPACE_USED_IDX)
 
             # Verify that we don't write same index twice
             if idx in used_idx and not (acq.idx.contrast == 0 and acq.scan_counter % 5 == 1):
@@ -218,15 +145,23 @@ class SiemensRAW:
     def save_kspace(self, filename: str) -> None:
         np.savez(filename, kspace=self.kspace, navigator=self.navigator, acs_mask=self.acs_mask)
 
-    def _get_kspace_dims(self):
+    def _get_kspace_dims(self) -> tuple:
         encoding_limits = self.header.encoding[0].encodingLimits
         get_dim = lambda x: getattr(encoding_limits, x).maximum + 1 # minimum must be zero
         nx = self.header.encoding[0].encodedSpace.matrixSize.x
         n_coils = self.header.acquisitionSystemInformation.receiverChannels
 
-        first_dims = [get_dim(d) for d in KSPACE_LAYOUT]
+        first_dims = [get_dim(d) for i, d in enumerate(KSPACE_LAYOUT) if i in KSPACE_USED_IDX]
 
         return tuple(first_dims + [nx, n_coils])
+
+    def _get_nav_dims(self) -> tuple:
+        kspace_dims = list(self._get_kspace_dims())
+        echo_index = KSPACE_USED_IDX.index(KSPACE_LAYOUT.index("contrast"))
+
+        kspace_dims[echo_index] = 1
+
+        return tuple(kspace_dims)
     
     def _check_for_flags(self, acq: ismrmrd.Acquisition) -> bool:
         for f in EXCLUSION_FLAGS:

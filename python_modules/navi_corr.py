@@ -1,25 +1,20 @@
 import ismrmrd
 from ismrmrdtools import coils
 import os
-import itertools
 import logging
 import traceback
 import numpy as np
 import numpy.fft as fft
 import matplotlib.pyplot as plt
-import xml.dom.minidom
-import base64
 import ctypes
-import re
 import ismrmrd_server.mrdhelper as mrdhelper
 import ismrmrd_server.constants as constants
-from time import perf_counter
 from tempfile import mkdtemp
 from pathlib import Path
 import nibabel as nib
 import pandas as pd
-import gc
 from dipy.denoise.localpca import mppca
+import dask.array as da
 
 from common import SiemensRAW, KSPACE_LAYOUT
 from grappa import grappa
@@ -49,6 +44,10 @@ def process(connection, config, mrdHeader):
     # Continuously parse incoming data parsed from MRD messages
     try:
         raw = SiemensRAW(mrdHeader)
+        # TEMP DEBUG
+        with open("acqs.pickle", 'rb') as f:
+            import pickle
+            connection = pickle.load(f)
         for item in connection:
             # ----------------------------------------------------------
             # Raw k-space data messages
@@ -58,9 +57,9 @@ def process(connection, config, mrdHeader):
             
                 # Process one repetition at the time (for now?)
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
-                    images = process_raw(raw, mrdHeader)
+                    images = process_raw(raw, mrdHeader, use_memmap=True)
                     connection.send_image(images)
-                    raw.reset_acq()
+                    #raw.reset_acq()
 
             elif item is None:
                 break
@@ -418,15 +417,33 @@ def process_raw(raw, mrdHeader, use_memmap=False):
     # First repetition will contain a noise acq. Extract it and keep it for all reps.
     if raw.noise is None:
         raw.extract_noise()
-    
+
     # Remove useless acquisitions at the beginning of each rep
     raw.remove_phase_stabilization_references()
 
     # Build kspace and navigator data structure
     print("Building kspace array...")
-    kspace, navigator, acs_mask = raw.build_kspace(use_memmap=use_memmap)
-    kspace = kspace[[rep_index], ...]           # (1, 1, 1, 1, nEcho=4, nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
-    navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
+    kspace, navigator = None, None
+    if use_memmap:
+        dims = raw._get_kspace_dims()
+        nav_dims = raw._get_nav_dims()
+        img_dims = dims[:-1] # same shape, except coils
+        # TEMP, change to w+
+        kspace = np.memmap("kspace.dat", mode='r+', dtype=np.complex64, shape=dims)
+        navigator = np.memmap("navigator.dat", mode='r+', dtype=np.complex64, shape=nav_dims)
+        corrected = np.memmap("corrected.dat", mode='r+', dtype=np.complex64, shape=kspace.shape)
+        images = np.memmap("images.dat", mode='w+', dtype=np.float32, shape=img_dims)
+    else:
+        corrected = np.zeros_like(kspace)
+        images = np.zeros(img_dims)
+
+    # TEMP DEBUG
+    #kspace, navigator, acs_mask = raw.build_kspace(kspace=kspace, navigator=navigator)
+    acs_mask = np.load("acs_mask.npy")
+    raw.reset_acq()
+
+    #kspace = kspace[[rep_index], ...]           # (1, 1, 1, 1, nEcho=4, nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
+    #navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
 
     # Save it for tests
     #raw.save_kspace("ice_data.npz")
@@ -473,19 +490,19 @@ def process_raw(raw, mrdHeader, use_memmap=False):
     # Axis order is derived from KSPACE_LAYOUT (source used
     # by _get_kspace_dims), so a reordering there propagates here automatically.
 
-    axis_names = list(KSPACE_LAYOUT) + ["kx", "coil"]
+    #axis_names = list(KSPACE_LAYOUT) + ["kx", "coil"]
 
     # axes kept in S: rep, slice, ky, kx, coil: all others must be singleton
-    KEEP = {"repetition", "slice", "kspace_encoding_step_1", "kx", "coil"}
+    #KEEP = {"slice", "kspace_encoding_step_1", "kx", "coil"}
 
     # drop singleton axes
-    squeeze_axes = tuple(i for i, n in enumerate(axis_names) if n not in KEEP)
-    S = navigator.squeeze(axis=squeeze_axes)
+    #squeeze_axes = tuple(i for i, n in enumerate(axis_names) if n not in KEEP)
+    #navigator = navigator.squeeze(axis=squeeze_axes)
 
     # reorder to (rep, kx, ky, slice, coil)
-    remaining = [n for n in axis_names if n in KEEP]          # order after squeeze
-    target    = ["repetition", "kx", "kspace_encoding_step_1", "slice", "coil"]
-    S = np.transpose(S, [remaining.index(n) for n in target])
+    #remaining = [n for n in axis_names if n in KEEP]          # order after squeeze
+    #target    = ["kx", "kspace_encoding_step_1", "slice", "coil"]
+    #navigator = np.transpose(navigator, [remaining.index(n) for n in target])
 
     # --------------------------------------------------
     # CENTERLINE MASKING on navigator lines
@@ -495,42 +512,97 @@ def process_raw(raw, mrdHeader, use_memmap=False):
     # --------------------------------------------------
     if use_mask:
         print("Applying centerline mask to navigator...")
-        S = apply_nav_mask_from_centerline(S, center_x_per_slice, nSlice, nKx, nKx_recon, width=35)
+        navigator = apply_nav_mask_from_centerline(navigator, center_x_per_slice, nSlice, nKx, nKx_recon, width=35)
         print("Centerline masking applied.")
 
     # --------------------------------------------------
     # PHASE EXTRACTION — unchanged from original
     # --------------------------------------------------
     print("Computing corrections...")
-    phase_extractions = np.stack([phase_extraction(s, raw.noise.data.T) for s in S])
-    field_estimates = field_conversion(phase_extractions, navigator_te) # rad/s
+    field_estimates = get_field_estimates(navigator, raw.noise.data.T, navigator_te) # rad/s
 
     # Apply navigator correction
-    print("Applying corrections...")
-    print("Start processing slices sequentially to reduce memory usage")
-    # Store corrected images for all slices
-
-    if use_memmap:
-        filename = os.path.join(mkdtemp(), "corrected.dat")
-        corrected = np.memmap(filename, dtype=np.complex64, mode='w+', shape=kspace.shape)
-
     print("K-Space correction...")
-    corrected[:] = kspace_correction(kspace, field_estimates, nKx, echo_times, dt) # (1, 4, 1, 384, 768, 24)
+
+    chunk_size = 1.0 if not use_memmap else 0.25
+
+    n_l, n_p = field_estimates.shape
+
+    l_step = max(1, int(np.ceil(chunk_size * n_l)))
+    p_step = max(1, int(np.ceil(chunk_size * n_p)))
+
+    for p_start in range(0, n_p, p_step):
+        break # TEMP: for faster testing
+        p_end = min(p_start + p_step, n_p)
+
+        for l_start in range(0, n_l, l_step):
+            l_end = min(l_start + l_step, n_l)
+
+            field_estimates_block = field_estimates[l_start:l_end, p_start:p_end]
+            kspace_block = kspace[:, p_start:p_end, l_start:l_end, :, :]
+
+            corrected[:, p_start:p_end, l_start:l_end, :, :] = kspace_correction(kspace_block, field_estimates_block, nKx, echo_times, dt)
+
+    #corrected[:] = kspace_correction(kspace, field_estimates, nKx, echo_times, dt) # (1, 4, 1, 384, 768, 24)
 
     # Use GRAPPA to fill in missing kspace lines
     print("GRAPPA correction...")
-    corrected[:] = grappa_reconstruction(corrected, acs_mask)
+
+    *leading, y, x, c = corrected.shape
+    corrected = corrected.reshape(-1, y, x, c)
+
+    # TODO: check for slicing chunks with GRAPPA
+    for i in range(corrected.shape[0]):
+        break # TEMP faster debug
+        corrected[i, :, :, :] = grappa_reconstruction(corrected[i], acs_mask)
+    corrected = corrected.reshape(*leading, y, x, c)
+
     print("Reconstruction...")
-    img = raw_to_image(corrected, nKx, nKx_recon)
-    img = mag_images(img)
+
+    n_echo, n_slice, _, _, n_coil = corrected.shape
+
+    echo_step = max(1, int(np.ceil(chunk_size * n_echo)))
+    slice_step = max(1, int(np.ceil(chunk_size * n_slice)))
+    coil_step = max(1, int(np.ceil(chunk_size * n_coil)))
+
+    for echo_start in range(0, n_echo, echo_step):
+        break # TEMP
+        echo_end = min(echo_start + echo_step, n_echo)
+        for slice_start in range(0, n_slice, slice_step):
+            slice_end = min(slice_start + slice_step, n_slice)
+            for coil_start in range(0, n_coil, coil_step):
+                coil_end = min(coil_start + coil_step, n_coil)
+
+                raw_block = corrected[echo_start:echo_end, slice_start:slice_end, :, :, coil_start:coil_end]
+                corrected[echo_start:echo_end, slice_start:slice_end, :, :, coil_start:coil_end] = raw_to_image(raw_block, nKx, nKx_recon)
+    #img = raw_to_image(corrected, nKx, nKx_recon)
+
+    # Walsh coil combination
+    print("  Using Inati coil combination with prewhitening...")
+
+    for e_start in range(0, n_echo, echo_step):
+        e_end = min(e_start + echo_step, n_echo)
+        for s_start in range(0, n_slice, n_slice):
+            s_end = min(s_start + slice_step, n_slice)
+            data_chunk = corrected[e_start:e_end, s_start:s_end, ...]
+
+            images[e_start:e_end, s_start:s_end, :, :] = coil_combination_Inati(data_chunk, noise_data=None)
+
+    #corrected[:] = coil_combination_Inati(corrected, noise_data=None)
+
+    # Remove readout oversampling by cropping
+    images[:] = remove_oversampling(images, nKx, nKx_recon, 3)
+
+    # USELESS?
+    #img = mag_images(img)
 
     # Save images for faster testing
     # np.save("images.npy", images)
 
     print("Denoising...")
     # Reshape for MPPCA : (nEcho, nRep, nSlice, nKy, nKx)
-    imgs_for_denoise = corrected[0]   # (4, 15, 384, 384) = (echo, slice, y, x)
-    imgs_for_denoise = imgs_for_denoise[:, np.newaxis, :, :, :] # (4, 1, 15, 384, 384) = (echo, rep, slice, y, x)
+    #imgs_for_denoise = corrected[0]   # (4, 15, 384, 384) = (echo, slice, y, x)
+    imgs_for_denoise = images[:, np.newaxis, :, :, :] # (4, 1, 15, 384, 384) = (echo, rep, slice, y, x)
 
     imgs_denoised = denoise_mppca(imgs_for_denoise, patch_radius=2)
 
@@ -575,20 +647,12 @@ def convert_to_ismrmrd_images(images, acq_headers, fov):
         images_out.append(ismrmrd_image)
     return images_out
 
-def raw_to_image(raw, nKx, nKx_recon, noise_data=None):
+def raw_to_image(raw, nKx, nKx_recon, axes=(2, 3), noise_data=None):
     # assumed shape : (repetitions, echoes, slices, y, x, coils)
     #                 (0          , 1     , 2,    , 3, 4, 5) 
 
-    data = np.flip(raw, (3, 4)) # inverser les données en x et y for some reason
-    data = reconstruct_image(data)
-    data *= np.prod(data.shape) # FFT scaling, for consistency with ICE apparently
-
-    # Walsh coil combination
-    print("  Using Inati coil combination with prewhitening...")
-    data = coil_combination_Inati(data, noise_data=noise_data)
-
-    # Remove readout oversampling by cropping
-    data = remove_oversampling(data, nKx, nKx_recon, 4)
+    data = np.flip(raw, axis=axes) # inverser les données en x et y for some reason
+    data = reconstruct_image(data, axes=axes)
 
     return data
 
@@ -600,25 +664,24 @@ def remove_oversampling(data, nKx, nKx_recon, readout_axis):
 def coil_combination_Inati(data, noise_data=None, smoothing=5, niter=3):
     """
     Coil combination using Inati iterative method with prewhitening.
-    
     Pipeline :
         1. Prewhitening: decorrelates coil noise
         2. Inati CSM estimation: estimates sensitivity maps from image itself
         3. Sensitivity-weighted combination: optimal SNR combination
-    
+
     Parameters
     ----------
-    data (rep, echo, slice, y, x, coils): complex coil images
+    data (echo, slice, y, x, coils): complex coil images
     noise_data (nCoils, nSamples): raw.noise.data
-    smoothing (int): smoothing kernel for Walsh CSM (default 5)
+    smoothing (int or 3-element array): smoothing kernel (z, y, x) for CSM estimation.
+        Use e.g. (1, smoothing, smoothing) to disable smoothing across slices.
     niter (int): Walsh power iterations (default 3)
 
     Returns
     -------
     combined (rep, echo, slice, y, x): magnitude combined image
     """
-    data = data[0, :, 0, ...]
-    echo,  y, x, _ = data.shape
+    echo, n_slices, y, x, _ = data.shape
 
     # Prewhitening matrix
     if noise_data is not None:
@@ -627,40 +690,36 @@ def coil_combination_Inati(data, noise_data=None, smoothing=5, niter=3):
     else:
         dmtx = None
 
-    combined = np.zeros((echo, y, x), dtype=np.float32)
+    combined = np.zeros((echo, n_slices, y, x), dtype=np.float32)
 
     for e in range(echo):
-        # Extract coil images : (y, x, nCoils) → (nCoils, y, x)
+        # (slice, y, x, coils) -> (coils, slice, y, x)
         img_coils = np.moveaxis(data[e], -1, 0)
 
-        # Prewhitening
         if dmtx is not None:
             img_coils = coils.apply_prewhitening(img_coils, dmtx)
 
-        # Inati CSM estimation + combination
         _, combined_complex = coils.calculate_csm_inati_iter(
             img_coils,
-            smoothing=smoothing,
+            smoothing=(1, smoothing, smoothing), # don't smooth over slices, because they might be interleaved
             niter=niter,
             thresh=1e-3
         )
 
         combined[e] = np.abs(combined_complex)
 
-    return combined[None, :, None, ...]
+    return combined
 
-def reconstruct_image(kspace, axes=(3, 4)):
+def reconstruct_image(kspace, axes=(2, 3)):
     # First ifftshift, because numpy assumes the DC component to be at index 0.
     # Physically, the acquisition has the DC component at its center and the high frequencies at its edges
-
-    # Preallocate an array on disk for our results
-    image = np.memmap(os.path.join(mkdtemp(), 'reconstruction.dat'), dtype=np.complex64, mode='w+', shape=kspace.shape)
-
-    image[:] = np.fft.ifftshift(kspace, axes=axes)
+    image = np.fft.ifftshift(kspace, axes=axes)
     # Inverse FFT to get the image
-    image[:] = np.fft.ifft2(image, axes=axes)
+    # norm=forward doesn't scale the output by 1/n (see https://numpy.org/doc/stable/reference/routines.fft.html#normalization)
+    # it's for consistency with ICE
+    image = np.fft.ifft2(image, axes=axes, norm="forward")
     # Pour replacer l'objet au centre de l'image?
-    image[:] = np.fft.fftshift(image, axes=axes)
+    image = np.fft.fftshift(image, axes=axes)
 
     return image
 
@@ -671,74 +730,58 @@ def phase_extraction(navigator, noise):
     noise     -- shape : (j, c)       -> (samples, coils)
     """
 
+    phase_correction = navigator.squeeze().transpose(2, 1, 0, 3)
     # subtract first navigator phase to remove static phase contributions
-    delta_S = (navigator * np.exp(-1j*np.angle(navigator[:, [0], :, :]))).astype(np.complex64)  # (samples=768, lines=384, slices=15, coils=(4,8,...))
+    phase_correction = (phase_correction * np.exp(-1j*np.angle(phase_correction[:, [0], :, :]))).astype(np.complex64)  # (samples=768, lines=384, slices=15, coils=(4,8,...))
 
-    w = np.abs(delta_S) / np.std(noise, axis=0)   # (768, 384, 15, coils=(4,8,...))  (TODO: check if should need to raise to power 2)
+    w = np.abs(phase_correction) / np.std(noise, axis=0)   # (768, 384, 15, coils=(4,8,...))  (TODO: check if should need to raise to power 2)
     # RuntimeWarning here because of dividing by zero
-    w_tilde = w/np.sum(w, axis=(0, 3), keepdims=True) # (768, 384, 15, coils=(4,8,...))
+    w /= np.sum(w, axis=(0, 3), keepdims=True) # (768, 384, 15, coils=(4,8,...))
     # Replace resulting NaNs by zero
-    w_tilde[np.isnan(w_tilde)] = 0.0
+    w[np.isnan(w)] = 0.0
 
-    delta_S = np.sum(w_tilde * delta_S, axis=(0, 3)) # (384, 15)  (lines, slices)
+    phase_correction *= w
+    phase_correction = np.sum(phase_correction, axis=(0, 3)) # (384, 15)  (lines, slices)
 
-    delta_phi_mean = np.angle(np.mean(delta_S, axis=0)) # (15,)  (slices,)
+    delta_phi_mean = np.angle(np.mean(phase_correction, axis=0)) # (15,)  (slices,)
 
-    delta_S_tilde = delta_S * np.exp(-1j * delta_phi_mean) # (384, 15)  (lines, slices)
+    phase_correction *= np.exp(-1j * delta_phi_mean) # (384, 15)  (lines, slices)
 
-    delta_phi = np.angle(delta_S_tilde) # (384, 15)  (lines, slices)
+    phase_correction = np.angle(phase_correction) # (384, 15)  (lines, slices)
 
-    return delta_phi
+    return phase_correction
 
 def field_conversion(nav_phases, te_nav):
     return nav_phases/te_nav    # rad/s
 
-def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt):
+def get_field_estimates(navigator, noise, te_nav):
+    return field_conversion(
+                phase_extraction(navigator, noise),
+                te_nav
+    )
+
+def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt, out=None):
     t = np.array([(j - n_samples/2)*dt for j in range(n_samples)], dtype=np.float32) # (768,) (samples,)
     t = np.repeat(t[:, np.newaxis], echo_times.shape[0], axis=1) # (768, 4) (samples, echo)
     t += echo_times # will probably crash  # (768, 4) (samples, echo)
 
-    demodulation = np.exp(-1j * np.einsum('rlp,je->replj', field_estimates, t)).astype(np.complex64)
-    print("demodulation.shape", demodulation.shape) # (1, 4, 15, 384, 768) (1, echo, slices, lines, samples)
+    demodulation = np.exp(-1j * np.einsum('lp,je->eplj', field_estimates, t)).astype(np.complex64)
 
-    # TODO: handle all the dimensions correctly instead of squeezing
-    corrected = raw_data*demodulation[..., np.newaxis] # (1, 4, 1, 384, 768, coils=(4,8,...)) (1, echo, slices, lines, samples, coils)
-    return corrected
+    out = raw_data*demodulation[..., np.newaxis]
+    return out
  
 def grappa_reconstruction(kspace, acs_lines, R=2, kernel_size=(5, 5)):
-    
-    *leading, y, x, c = kspace.shape
+    k_coils = np.moveaxis(kspace,   -1, 0)   # (nCoils, nKy, nKx)
+    # Extract ACS line indices from mask
+    # acs_lines[0] is boolean mask of shape (nKy,)
+    # ACS lines are those where the entire ky line is non-zero
+    acs_idx = np.where(acs_lines)[0]
+    # Apply GRAPPA — returns (nCoils, nKy, nKx)
+    k_filled = apply_grappa(k_coils, acs_idx, R=R, kernel_size=kernel_size)
+    # Reorder back to (nKy, nKx, nCoils)
+    k_filled = np.moveaxis(k_filled, 0, -1)
 
-    kspace_r   = kspace.reshape(-1, y, x, c)
-
-    results = np.memmap(
-        os.path.join(mkdtemp(), 'grappa.dat'),
-        dtype=np.complex64, mode='w+',
-        shape=kspace_r.shape
-    )
-
-    for i in range(kspace_r.shape[0]):
-        # kspace_r[i]   : (nKy, nKx, nCoils) → reorder to (nCoils, nKy, nKx)
-        k_coils   = np.moveaxis(kspace_r[i],   -1, 0)   # (nCoils, nKy, nKx)
-
-        # Extract ACS line indices from mask
-        # acs_lines[0] is boolean mask of shape (nKy,)
-        # ACS lines are those where the entire ky line is non-zero
-        acs_idx = np.where(acs_lines)[0]
-
-        if len(acs_idx) == 0:
-            print(f"  WARNING : no ACS lines found for batch {i}")
-            results[i] = kspace_r[i]
-            continue
-
-        # Apply GRAPPA — returns (nCoils, nKy, nKx)
-        k_filled = apply_grappa(k_coils, acs_idx, R=R, kernel_size=kernel_size)
-
-        # Reorder back to (nKy, nKx, nCoils)
-        results[i] = np.moveaxis(k_filled, 0, -1)
-    del kspace_r
-    results.flush()
-    return results.reshape(*leading, y, x, c)
+    return k_filled
 
 def apply_grappa(kspace_2d, acs_lines, R, kernel_size=(5, 5)):
     
