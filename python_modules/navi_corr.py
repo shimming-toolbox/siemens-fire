@@ -55,7 +55,7 @@ def process(connection, config, mrdHeader):
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     images = process_raw(raw, mrdHeader, use_memmap=True)
                     connection.send_image(images)
-                    #raw.reset_acq()
+                    raw.reset_acq()
 
             elif item is None:
                 break
@@ -104,17 +104,14 @@ def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, 
     # --------------------------------------------------
     # GRAPPA RECONSTRUCTION ON ECHO 0
     # --------------------------------------------------
-    kspace_ec0   = kspace[:, :, :, :, [0], :, :, :, :, :]
+    kspace_ec0   = kspace[0, :, :, :, :]
 
-    # squeeze (rep, phase, set, segment, echo, kz) → (nSlice, nKy, nKx, nCoils)
-    squeeze_axes = (0, 1, 2, 3, 4, 6)
-    kspace_ec0    = np.squeeze(kspace_ec0,   axis=squeeze_axes)
+    # (nSlice, nKy, nKx, nCoils)
 
     print(f"  kspace_sq.shape : {kspace_ec0.shape}")
 
     kspace_grappa = grappa_reconstruction(kspace_ec0, acs_mask)
     print(f"  kspace_grappa.shape : {kspace_grappa.shape}")
-    del kspace_ec0
 
     # Restore to (rep=1, echo=1, slice, y, x, coils) for raw_to_image
     kspace_grappa = kspace_grappa[np.newaxis, np.newaxis, :, :, :, :]
@@ -122,7 +119,6 @@ def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, 
 
     data = np.flip(kspace_grappa, 4) # x axis inversion
     data = reconstruct_image(data)
-    del kspace_grappa
 
     # Coil combination (RMS, coils_axis=-1)
     data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
@@ -387,7 +383,7 @@ def apply_nav_mask_from_centerline(S, center_x_per_slice, nSlice, nKx, nKx_recon
 
     return nav_masked
 
-def process_raw(raw, mrdHeader, use_memmap=False):
+def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
 
     # Metadata from ISMRMRD header
     acq_metadata=SiemensRAW(mrdHeader)
@@ -433,7 +429,8 @@ def process_raw(raw, mrdHeader, use_memmap=False):
         images = np.zeros(img_dims)
 
     kspace, navigator, acs_mask = raw.build_kspace(kspace=kspace, navigator=navigator)
-    raw.reset_acq()
+    # Acquisitions are needed later on, so don't reset them actually
+    #raw.reset_acq()
 
     #kspace = kspace[[rep_index], ...]           # (1, 1, 1, 1, nEcho=4, nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
     #navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
@@ -584,15 +581,16 @@ def process_raw(raw, mrdHeader, use_memmap=False):
     # Save images for faster testing
     # np.save("images.npy", images)
 
-    print("Denoising...")
-    # Reshape for MPPCA : (nEcho, nRep, nSlice, nKy, nKx)
-    #imgs_for_denoise = corrected[0]   # (4, 15, 384, 384) = (echo, slice, y, x)
-    imgs_for_denoise = images[:, np.newaxis, :, :, :] # (4, 1, 15, 384, 384) = (echo, rep, slice, y, x)
+    if denoise_images:
+        print("Denoising...")
+        # Reshape for MPPCA : (nEcho, nRep, nSlice, nKy, nKx)
+        #imgs_for_denoise = corrected[0]   # (4, 15, 384, 384) = (echo, slice, y, x)
+        imgs_for_denoise = images[:, np.newaxis, :, :, :] # (4, 1, 15, 384, 384) = (echo, rep, slice, y, x)
 
-    imgs_denoised = denoise_mppca(imgs_for_denoise, patch_radius=2)
+        imgs_denoised = denoise_mppca(imgs_for_denoise, patch_radius=2)
 
-    # Reshape back
-    corrected = imgs_denoised[:, 0, :, :, :][np.newaxis, :, :, :, :] # (1, 4, 15, 384, 384) = (rep, echo, slice, y, x)
+        # Reshape back
+        images = imgs_denoised[:, 0, :, :, :][np.newaxis, :, :, :, :] # (1, 4, 15, 384, 384) = (rep, echo, slice, y, x)
 
     field_of_view = (ctypes.c_float(FOV_x), ctypes.c_float(FOV_y), ctypes.c_float(FOV_z))
 
@@ -602,9 +600,7 @@ def process_raw(raw, mrdHeader, use_memmap=False):
         if key not in header_map:
             header_map[key] = acq.getHead()
     acq_headers = [header_map[(c, s)] for c in range(nEcho) for s in range(nSlice)]
-    for i, h in enumerate(acq_headers):
-        print(f"Image {i}: contrast={h.idx.contrast}, slice={h.idx.slice}")
-    ismrmrd_images = convert_to_ismrmrd_images(corrected, acq_headers, field_of_view)
+    ismrmrd_images = convert_to_ismrmrd_images(images, acq_headers, field_of_view)
     
     print("Sending images...")
     return ismrmrd_images
@@ -756,15 +752,16 @@ def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt, out=
     return out
  
 def grappa_reconstruction(kspace, acs_lines, R=2, kernel_size=(5, 5)):
-    k_coils = np.moveaxis(kspace,   -1, 0)   # (nCoils, nKy, nKx)
+    k_coils = np.moveaxis(kspace,   -1, -3)   # (nCoils, nKy, nKx)
     # Extract ACS line indices from mask
     # acs_lines[0] is boolean mask of shape (nKy,)
     # ACS lines are those where the entire ky line is non-zero
     acs_idx = np.where(acs_lines)[0]
     # Apply GRAPPA — returns (nCoils, nKy, nKx)
-    k_filled = apply_grappa(k_coils, acs_idx, R=R, kernel_size=kernel_size)
+    func = np.vectorize(lambda k: apply_grappa(k, acs_idx, R=R, kernel_size=kernel_size), signature="(a, b, c)->(a, b, c)")
+    k_filled = func(k_coils)
     # Reorder back to (nKy, nKx, nCoils)
-    k_filled = np.moveaxis(k_filled, 0, -1)
+    k_filled = np.moveaxis(k_filled, -3, -1)
 
     return k_filled
 
