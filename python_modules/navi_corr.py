@@ -589,6 +589,7 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
 
         imgs_denoised = denoise_mppca(imgs_for_denoise, patch_radius=2)
 
+        #TODO: Hmm wrong shape here I think
         # Reshape back
         images = imgs_denoised[:, 0, :, :, :][np.newaxis, :, :, :, :] # (1, 4, 15, 384, 384) = (rep, echo, slice, y, x)
 
@@ -615,9 +616,10 @@ def convert_to_ismrmrd_images(images, acq_headers, fov):
     images_out = []
     *_, y, x = images.shape
     data = convert_to_int16(images)
-    for i, img in enumerate(data.reshape(-1, y, x)):
+    for i, acq in enumerate(acq_headers):
+        img = data[acq.idx.contrast, acq.idx.slice, :, :]
         ismrmrd_image = ismrmrd.Image.from_array(img, transpose=False)
-        ismrmrd_image.setHead(mrdhelper.update_img_header_from_raw(ismrmrd_image.getHead(), acq_headers[i]))
+        ismrmrd_image.setHead(mrdhelper.update_img_header_from_raw(ismrmrd_image.getHead(), acq))
         ismrmrd_image.field_of_view = fov
         ismrmrd_image.image_index = i
         tmp_meta = ismrmrd.Meta()
