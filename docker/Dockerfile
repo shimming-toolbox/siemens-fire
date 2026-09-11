@@ -51,15 +51,6 @@ ENV PATH=/opt/code/spinalcordtoolbox/bin:$PATH
 # Install sct_deepseg spinalcord model
 RUN sct_deepseg spinalcord -install
 
-# Install specific versions
-RUN pip install numpy==1.26.4 h5py==3.14.0
-
-# Clone the mrd2nii repository and install it
-RUN mkdir -p /opt/code/mrd2nii && \
-    git clone https://github.com/shimming-toolbox/mrd2nii.git /opt/code/mrd2nii && \
-    cd /opt/code/mrd2nii && \
-    pip install -e .
-
 # Install bet2
 RUN conda install -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge fsl-bet2
 
@@ -68,38 +59,28 @@ RUN mkdir /opt/code/prelude && \
     curl -o /opt/code/prelude/prelude -JL https://github.com/shimming-toolbox/binaries/raw/master/prelude && \
     sudo install /opt/code/prelude/prelude /usr/local/bin
 
-# Install ismrmrd-python-tools
-RUN pip install /opt/code/ismrmrd-python-tools
-
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /usr/local/bin/uv
-# Add uv files
-COPY ./uv/.python-version /opt/code/python-ismrmrd-server
-COPY ./uv/pyproject.toml /opt/code/python-ismrmrd-server
-COPY ./uv/uv.lock /opt/code/python-ismrmrd-server
-# Install python packages
-RUN uv sync --frozen --project /opt/code/python-ismrmrd-server
+ENV UV_LINK_MODE=copy
 
 FROM mrd_converter AS python-mrd-devcontainer
 
 # Add ST modules
-COPY ./python_modules/st_masking.py    /opt/code/python-ismrmrd-server
-COPY ./python_modules/st_masking.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/st_fieldmap.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/st_fieldmap.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/st_b0shim.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/st_b0shim.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/nomad_f0xyz_opt.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/nomad_f0xyz_opt.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/finst_shim.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/finst_shim.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/navi_corr.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/common.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/grappa.py  /opt/code/python-ismrmrd-server
+RUN mkdir -p /opt/code/siemens-fire
+WORKDIR /opt/code/siemens-fire
+COPY ./pyproject.toml ./uv.lock /opt/code/siemens-fire/
+RUN uv sync --frozen
+COPY ./python_modules /opt/code/siemens-fire/
+COPY ./scripts ./opt/code/siemens-fire/
+
+# Add dev user (for development purposes only)
+RUN groupadd -g 1000 dev && \
+    useradd -m -u 1000 -g 1000 -s /bin/bash dev
 
 # Set the st_masking module as the default module
 #CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate base && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]
-CMD /bin/bash
+#CMD /bin/bash
+CMD ["uv", "run", "scripts/run_server.py"]
 
 # Clean up to reduce image size
 RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \

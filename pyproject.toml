@@ -1,0 +1,25 @@
+[project]
+name = "siemens-fire"
+version = "0.1.0"
+description = "Additionnal modules for ISMRMRD server"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dipy>=1.12.1",
+    "ismrmrd==1.14.1",
+    "ismrmrd-python-tools",
+    "matplotlib>=3.10.8",
+    "memray>=1.19.3",
+    "mrd2nii",
+    "numpy>=2.2.6",
+    "python-ismrmrd-server",
+    "scikit-image>=0.26.0",
+    "shimmingtoolbox",
+    "tqdm>=4.67.3",
+]
+
+[tool.uv.sources]
+python-ismrmrd-server = { git = "https://github.com/Antetokounpo/python-ismrmrd-server" }
+shimmingtoolbox = { git = "https://github.com/shimming-toolbox/shimming-toolbox", subdirectory = "shimming-toolbox" }
+mrd2nii = { git = "https://github.com/shimming-toolbox/mrd2nii.git" }
+ismrmrd-python-tools = { git = "https://github.com/ismrmrd/ismrmrd-python-tools" }

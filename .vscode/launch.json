@@ -9,8 +9,7 @@
             "name": "Start server",
             "type": "debugpy",
             "request": "launch",
-            "python": "/root/shimming-toolbox/python/bin/python",
-            "program": "/opt/code/python-ismrmrd-server/main.py",
+            "program": "${workspaceFolder}/scripts/run_server.py",
             "args": [
                 "-H", "0.0.0.0",
                 "-p", "9020",
