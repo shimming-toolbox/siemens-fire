@@ -1,0 +1,14 @@
+[project]
+name = "SLR_Respiratory_Binning"
+version = "0.1.0"
+description = "Respiratory binned SLR recon for spinal cord MRI."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "cupy-cuda13x>=13.6.0",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.9.4",
+    "numpy>=2.0.2",
+    "scikit-learn>=1.6.1",
+    "twixtools>=0.24",
+]
