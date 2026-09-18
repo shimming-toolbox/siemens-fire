@@ -77,6 +77,9 @@ COPY ./scripts ./opt/code/siemens-fire/
 RUN groupadd -g 1000 dev && \
     useradd -m -u 1000 -g 1000 -s /bin/bash dev
 
+# Ugly hack to allow access to shimming-toolbox to the dev user
+RUN chmod -R 755 /root
+
 # Set the st_masking module as the default module
 #CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate base && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]
 #CMD /bin/bash
