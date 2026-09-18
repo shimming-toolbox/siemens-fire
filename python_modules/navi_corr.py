@@ -542,14 +542,14 @@ def process_raw(raw, mrdHeader):
     # Save images for faster testing
     # np.save("images.npy", images)
 
-    # Reshape for MPPCA : (nEcho, nRep, nSlice, nKy, nKx)
-    imgs_for_denoise = corrected[0]   # (4, 15, 384, 384) = (echo, slice, y, x)
-    imgs_for_denoise = imgs_for_denoise[:, np.newaxis, :, :, :] # (4, 1, 15, 384, 384) = (echo, rep, slice, y, x)
+    # # Reshape for MPPCA : (nEcho, nRep, nSlice, nKy, nKx)
+    # imgs_for_denoise = corrected[0]   # (4, 15, 384, 384) = (echo, slice, y, x)
+    # imgs_for_denoise = imgs_for_denoise[:, np.newaxis, :, :, :] # (4, 1, 15, 384, 384) = (echo, rep, slice, y, x)
 
-    imgs_denoised = denoise_mppca(imgs_for_denoise, patch_radius=2)
+    # imgs_denoised = denoise_mppca(imgs_for_denoise, patch_radius=2)
 
-    # Reshape back
-    corrected = imgs_denoised[:, 0, :, :, :][np.newaxis, :, :, :, :] # (1, 4, 15, 384, 384) = (rep, echo, slice, y, x)
+    # # Reshape back
+    # corrected = imgs_denoised[:, 0, :, :, :][np.newaxis, :, :, :, :] # (1, 4, 15, 384, 384) = (rep, echo, slice, y, x)
 
     field_of_view = (ctypes.c_float(FOV_x), ctypes.c_float(FOV_y), ctypes.c_float(FOV_z))
 
