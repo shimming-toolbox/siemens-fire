@@ -218,8 +218,8 @@ def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, 
 def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
     """
     Segment the spinal cord with SCT deepseg on the cropped reference volume
-    (ref_echo0.nii.gz) and extract the center of mass of the
-    segmentation as the spinal cord center.
+    (ref_echo0.nii.gz) and extract the width of the spinal canal the
+    segmentation.
 
     Parameters
     ----------
@@ -255,13 +255,13 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
         print(f"ERROR : reference volume not found : {ref_path}")
         return None
 
-    print(f"Running sct_deepseg spinalcord ...")
+    print(f"Running sct_deepseg sc_canal_t2 ...")
     print(f"  Input  : {ref_path}")
     print(f"  Output : {seg_path}")
 
     result = subprocess.run(
         [   "sct_deepseg",
-            "spinalcord",
+            "sc_canal_t2",
             "-i", str(ref_path.resolve()),
             "-o", str(seg_path.resolve()),
         ],
@@ -287,8 +287,8 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
         print("ERROR : segmentation and reference volume shapes differ.")
         return None
 
-    # Extract centerline from segmentation
-    print("\n=== Extracting spinal cord centerline ===")
+    # Extract spinal canal width from segmentation
+    print("\n=== Extracting spinal canal width ===")
     centerline = []
 
     for z in range(nSlice):
@@ -297,21 +297,27 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
         mask = seg_mask[:, :, z] > 0
 
         if not np.any(mask):
-            print(f"  WARNING : no spinal cord detected at slice z={z}")
+            print(f"  WARNING : no spinal canal detected at slice z={z}")
             continue
 
         x_coords, y_coords = np.where(mask)
 
-        # Center of mass of the segmented spinal cord
-        x_center = np.mean(x_coords)
+        # Bounding box of the segmented spinal cord along x
+        x_min = np.min(x_coords)
+        x_max = np.max(x_coords)
+
+        # Center and maximal width along x
+        x_center = (x_min + x_max) / 2
+        x_width = x_max - x_min
+
+        # Keep y center for the centerline CSV
         y_center = np.mean(y_coords)
 
-        centerline.append((x_center, y_center, z))
-
-        print(f" z={z:2d} → center_crop=({x_center:.1f}, {y_center:.1f})")
+        centerline.append((x_center, y_center, x_width, z))
+        print(f" z={z:2d} → center_x={x_center:.1f}, width_x={x_width:.1f}")
 
     if len(centerline) == 0:
-        print("ERROR : no spinal cord detected in segmentation.")
+        print("ERROR : no spinal canal detected in segmentation.")
         return None
     
     # Crop coordinates
@@ -328,12 +334,10 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
     # CSV 1 — cropped image space
     # --------------------------------------------------
     with open(csv_path_crop, "w") as f:
-        f.write("x_crop,y_crop,z_anat\n")
+        f.write("x_crop,y_crop,width_x,z_anat\n")
 
-        for x_crop, y_crop, z in centerline:
-            f.write(
-                f"{x_crop:.4f},{y_crop:.4f},{z}\n"
-            )
+        for x_crop, y_crop, width_x, z in centerline:
+            f.write(f"{x_crop:.4f},{y_crop:.4f},{width_x:.4f},{z}\n")
 
     print(f"\nCenterline in cropped image space saved :{csv_path_crop}")
 
@@ -342,49 +346,69 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
     # --------------------------------------------------
     with open(csv_path, "w") as f:
 
-        for x_crop, y_crop, z in centerline:
+        for x_crop, y_crop, width_x, z in centerline:
 
             # No flip is applied here because ref_echo0.nii.gz
             # was not flipped before being given to SCT.
             x_img = x_crop + x_lo_crop
             y_img = y_crop + y_lo_crop
 
-            f.write(
-                f"{x_img:.4f},{y_img:.4f},{z}\n"
-            )
+            f.write(f"{x_img:.4f},{y_img:.4f},{width_x:.4f},{z}\n")
 
             print(
                 f"  z={z:2d} → "
                 f"crop({x_crop:.1f},{y_crop:.1f}) → "
                 f"img({x_img:.1f},{y_img:.1f})"
+                f"width_x={width_x:.1f}"
             )
 
     print(f"\nCenterline in full image space saved : {csv_path}")
 
     return csv_path
 
-def apply_nav_mask_from_centerline(S, center_x_per_slice, nSlice, nKx, nKx_recon, width=35):
+def apply_nav_mask_from_centerline(S, center_x_per_slice, width_x_per_slice, nSlice, nKx, nKx_recon):
     """
-    Apply spatial masks to all navigator lines around the spinal cord centerline.
+    Apply spatial masks to all navigator lines around the spinal cord.
     Navigators are FFT'd to spatial domain, masked per slice, and returned masked.
 
-    S (rep, samples, ky, sl, coil): complex — navigator kspace lines
-    center_x_per_slice {sl: x_img}:  centerline x in image coords (0 to nKx_recon)
-    nKx_recon (int): image size along x (after oversampling removal)
-    width (int): half-width of mask in navigator spatial domain
+    The mask center and width are determined independently for each slice
+    from the spinal canal segmentation.
+
+    Parameters
+    ----------
+    S (np.ndarray): Navigator k-space data with shape (shape: (rep, samples, ky, sl, coil)).
+
+    center_x_per_slice (dict): the spinal cord center in image coordinates.
+
+    width_x_per_slice (dict): the maximal spinal canal width along x in image coordinates.
+
+    nSlice (int): Number of slices.
+
+    nKx (int): Navigator readout size.
+
+    nKx_recon (int): Reconstructed image size along x.
     """
 
     # FFT to spatial domain: one batched FFT over the samples axis
     nav_spatial = np.fft.fftshift(np.fft.fft(S, axis=1), axes=1)
    
     # Build (samples, sl) mask
-    mask = np.zeros((nKx, nSlice))
+    mask = np.zeros((nKx, nSlice), dtype=np.float32)
+
     for sl, x_img in center_x_per_slice.items():
-        # Scale x_img (image coords) to navigator spatial domain
+        # Scale the center (image coords) to navigator spatial coordinates
         x_center = int(x_img / nKx_recon * nKx)
+
+      # Width from segmentation, converted to navigator coordinates
+        width_img = width_x_per_slice[sl]
+        width_nav = width_img / nKx_recon * nKx
+
+        # Half-width around center
+        half_width = int(np.ceil(width_nav / 2)) +1
+
         # Rectangular mask
-        lo = max(0, x_center - width)
-        hi = min(nKx, x_center + width)
+        lo = max(0, x_center - half_width)
+        hi = min(nKx, x_center + half_width)
         mask[lo:hi, sl] = 1
 
     # Broadcast (samples, sl) → (rep, samples, ky, sl, coil)
@@ -452,14 +476,18 @@ def process_raw(raw, mrdHeader):
         print(f"Centerline detection failed — continuing without masking")
 
     # --------------------------------------------------
-    # LOAD CENTERLINE CSV
+    # LOAD CENTERLINE CSV -- WIDHT MASK
     # --------------------------------------------------
     center_x_per_slice = {}
+    width_x_per_slice = {}
 
     if csv_path is not None:
-        df_cl = pd.read_csv(csv_path, header=None, names=["x", "y", "z"])
+        df_cl = pd.read_csv(csv_path, header=None, names=["x", "y", "width_x", "z"])
         center_x_per_slice = {int(row["z"]): float(row["x"]) for _, row in df_cl.iterrows()}
+        width_x_per_slice = {int(row["z"]): float(row["width_x"]) for _, row in df_cl.iterrows()}
+
         print(f"Centerline loaded : {len(center_x_per_slice)} slices")
+        print(f"Width loaded      : {len(width_x_per_slice)} slices")
         use_mask = True
     else:
         print("No centerline — using full navigator line")
@@ -495,7 +523,7 @@ def process_raw(raw, mrdHeader):
     # --------------------------------------------------
     if use_mask:
         print("Applying centerline mask to navigator...")
-        S = apply_nav_mask_from_centerline(S, center_x_per_slice, nSlice, nKx, nKx_recon, width=35)
+        S = apply_nav_mask_from_centerline(S, center_x_per_slice, width_x_per_slice, nSlice, nKx, nKx_recon)
         print("Centerline masking applied.")
 
     # --------------------------------------------------

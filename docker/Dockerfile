@@ -50,6 +50,7 @@ ENV PATH=/opt/code/spinalcordtoolbox/bin:$PATH
 
 # Install sct_deepseg spinalcord model
 RUN sct_deepseg spinalcord -install
+RUN sct_deepseg sc_canal_t2 -install
 
 # Install bet2
 RUN conda install -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge fsl-bet2
