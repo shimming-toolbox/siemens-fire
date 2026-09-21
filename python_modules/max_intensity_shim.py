@@ -156,6 +156,7 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
 
 
 def best_idx_to_scanner_shim(fname_shim_file, fname_best_indexes, fname_output):
+    # Todo: This is ow obsolete by ST PR
 
     with open(fname_best_indexes, 'r') as f:
         lines = f.readlines()
