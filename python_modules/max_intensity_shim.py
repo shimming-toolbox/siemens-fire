@@ -21,8 +21,8 @@ import shutil
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
-finstshimFolder = f"{debugFolder}/finst_shim"
-mrd2niiFolder = f"{finstshimFolder}/mrd2nii"
+shimFolder = f"{debugFolder}/max_intensity_shim"
+mrd2niiFolder = f"{shimFolder}/mrd2nii"
 dataFolder = "/tmp/share/saved_data"
 
 def process(connection, config, mrdHeader):
@@ -83,16 +83,16 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    if os.path.exists(finstshimFolder):
-        shutil.rmtree(finstshimFolder)
-        logging.debug("Removed existing folder " + finstshimFolder + " for finst shim output files")
+    if os.path.exists(shimFolder):
+        shutil.rmtree(shimFolder)
+        logging.debug("Removed existing folder " + shimFolder + " for max intensity shim output files")
 
-    os.makedirs(finstshimFolder)
-    logging.debug("Created folder " + finstshimFolder + " for finst shim output files")
+    os.makedirs(shimFolder)
+    logging.debug("Created folder " + shimFolder + " for max intensity shim output files")
     
     if not os.path.exists(mrd2niiFolder):
         os.makedirs(mrd2niiFolder)
-        logging.debug("Created folder " + mrd2niiFolder + " for MRD finst shim output files")
+        logging.debug("Created folder " + mrd2niiFolder + " for MRD max intensity shim output files")
     subprocess.run(['mrd2nii',
                     '-i', connection.mrdFilePath,
                     '-o', mrd2niiFolder],
@@ -121,10 +121,11 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
     else:
         nii_mag = nib.load(fname_mag)
         if nii_mag.ndim != 4:
-            raise RuntimeError("Magnitude image is not 4D as expected for finst_shim")
+            raise RuntimeError("Magnitude image is not 4D as expected for max intensity shim")
         mag_mean = np.mean(nii_mag.get_fdata(), axis=(3))
         nii_mag_mean = nib.Nifti1Image(mag_mean, nii_mag.affine, nii_mag.header)
-        fname_mag_mean = os.path.join(finstshimFolder, "magnitude_mean.nii.gz")
+        nii_mag_mean.set_data_dtype(np.float32)
+        fname_mag_mean = os.path.join(shimFolder, "magnitude_mean.nii.gz")
         nib.save(nii_mag_mean, fname_mag_mean)
         logging.info("Saved mean magnitude image over time to: %s", fname_mag_mean)
 
@@ -132,78 +133,29 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
         env["CUDA_VISIBLE_DEVICES"] = "0"
         env["SCT_USE_GPU"] = "1"
         path_sct_binaries = '/opt/code/spinalcordtoolbox/bin'
-        fname_mask = os.path.join(finstshimFolder, 'mask_sct_deepseg_seg.nii.gz')
+        fname_mask = os.path.join(shimFolder, 'mask_sct_deepseg_seg.nii.gz')
         subprocess.run([os.path.join(path_sct_binaries, 'sct_deepseg'), 'spinalcord',
                         '-i', fname_mag_mean,
                         '-o', fname_mask],
                         env=env,
                         check=True)
 
-    fname_best_idx = os.path.join(finstshimFolder, "best_shim_index.txt")
-    subprocess.run(['st_b0shim', 'max-intensity',
-                    '-i', fname_mag,
-                    '--mask', fname_mask,
-                    '-o', fname_best_idx],
-                    check=True)
-
-    fname_output = os.path.join(finstshimFolder, "scanner_shim.txt")
+    fname_output = os.path.join(shimFolder, "scanner_shim.txt")
     fname_applied_shims = os.path.join(dataFolder, "scanner_shim_last_acq.txt")
-    best_idx_to_scanner_shim(fname_applied_shims, fname_best_idx, fname_output)
+    try:
+        subprocess.run(['st_b0shim', 'max-intensity',
+                        '-i', fname_mag,
+                        '--coefs', fname_applied_shims,
+                        '--mask', fname_mask,
+                        '-o', shimFolder],
+                        check=True)
+    except subprocess.CalledProcessError as e:
+        logging.error("st_b0shim failed with return code %d", e.returncode)
+        logging.error("Command output: %s", e.output)
+        if os.path.exists(fname_output):
+            os.remove(fname_output)
+        return
 
     shutil.copyfile(fname_output, os.path.join(dataFolder, "scanner_shim.txt"))
 
     return
-
-
-def best_idx_to_scanner_shim(fname_shim_file, fname_best_indexes, fname_output):
-    # Todo: This is ow obsolete by ST PR
-
-    with open(fname_best_indexes, 'r') as f:
-        lines = f.readlines()
-
-    n_slices = int(lines[0])
-    best_indexes = [int(x) for x in lines[1].split(' ')]
-
-    with open(fname_shim_file, 'r') as f:
-        lines = f.readlines()
-
-    coefs = []
-    for i_slice in range(n_slices):
-        best_line = lines[(best_indexes[i_slice] * n_slices) + 1]
-        values = [float(x.strip()) for x in best_line.split('|')]
-        coefs.append(values)
-
-    # Create column names: "orderX_channelY"
-    column_names = ['f0', 'Gx', 'Gy', 'Gz']
-    coefs_array = np.array(coefs)
-
-    # Compute column widths
-    # 1. Get max formatted value length in each column
-    formatted_values = []
-    col_widths = []
-
-    for col_idx in range(coefs_array.shape[1]):
-        col_vals = coefs_array[:, col_idx]
-        formatted_col = [f"{val:.6f}" for val in col_vals]
-        formatted_values.append(formatted_col)
-        max_val_len = max(len(s) for s in formatted_col)
-        col_name_len = len(column_names[col_idx])
-        col_width = max(max_val_len, col_name_len)
-        col_widths.append(col_width)
-
-    # Write to file manually
-    with open(fname_output, 'w') as f:
-        # Write header (centered titles)
-        header_cells = [column_names[i].center(col_widths[i]) for i in range(len(column_names))]
-        header = ' | '.join(header_cells)
-        f.write(header + '\n')
-
-        # Write each row of shim values (right-aligned)
-        nb_rows = coefs_array.shape[0]
-        for row_idx in range(nb_rows):
-            row_cells = [
-                formatted_values[col_idx][row_idx].rjust(col_widths[col_idx])
-                for col_idx in range(len(column_names))
-            ]
-            row_str = ' | '.join(row_cells)
-            f.write(row_str + '\n')
