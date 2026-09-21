@@ -715,8 +715,14 @@ def phase_extraction(navigator, noise):
     print("navigator.shape", navigator.shape)   # (768, 384, 15, coils=(4,8,...))
     print("noise.shape=", noise.shape)      # (768, coils=(4,8,...))
 
-    # subtract first navigator phase to remove static phase contributions
-    delta_S = (navigator * np.exp(-1j*np.angle(navigator[:, [0], :, :]))).astype(np.complex64)  # (samples=768, lines=384, slices=15, coils=(4,8,...))
+    # Normalize each navigator to unit magnitude
+    nav_unit = navigator / (np.abs(navigator) + 1e-8)
+    # Circular mean of navigator phases over lines
+    nav_ref = np.mean(nav_unit, axis=1, keepdims=True)
+    # Mean reference phase
+    phi_ref = np.angle(nav_ref)
+    # Remove static phase
+    delta_S = (navigator * np.exp(-1j * phi_ref)).astype(np.complex64) # (samples=768, lines=384, slices=15, coils=(4,8,...))
     print("delta_S.shape=", delta_S.shape)
 
     w = np.abs(delta_S) / np.std(noise, axis=0)   # (768, 384, 15, coils=(4,8,...))  (TODO: check if should need to raise to power 2)
