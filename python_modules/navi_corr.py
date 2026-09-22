@@ -113,7 +113,7 @@ def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, 
     print(f"  kspace_restored.shape : {kspace_grappa.shape}")
 
     data = np.flip(kspace_grappa, 4) # x axis inversion
-    data = reconstruct_image(data)
+    data = reconstruct_image(data, axes=(3, 4))
 
     # Coil combination (RMS, coils_axis=-1)
     data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
@@ -469,20 +469,7 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     # Axis order is derived from KSPACE_LAYOUT (source used
     # by _get_kspace_dims), so a reordering there propagates here automatically.
 
-    #axis_names = list(KSPACE_LAYOUT) + ["kx", "coil"]
-
-    # axes kept in S: rep, slice, ky, kx, coil: all others must be singleton
-    #KEEP = {"slice", "kspace_encoding_step_1", "kx", "coil"}
-
-    # drop singleton axes
-    #squeeze_axes = tuple(i for i, n in enumerate(axis_names) if n not in KEEP)
-    #navigator = navigator.squeeze(axis=squeeze_axes)
-
-    # reorder to (rep, kx, ky, slice, coil)
-    #remaining = [n for n in axis_names if n in KEEP]          # order after squeeze
-    #target    = ["kx", "kspace_encoding_step_1", "slice", "coil"]
-    #navigator = np.transpose(navigator, [remaining.index(n) for n in target])
-
+    navigator = np.moveaxis(np.moveaxis(navigator, 3, 1), 2, 3)
     # --------------------------------------------------
     # CENTERLINE MASKING on navigator lines
     # S[rep, samples, ky, sl, coil] — samples axis = nav readout
@@ -558,7 +545,7 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
 
     for e_start in range(0, n_echo, echo_step):
         e_end = min(e_start + echo_step, n_echo)
-        for s_start in range(0, n_slice, n_slice):
+        for s_start in range(0, n_slice, slice_step):
             s_end = min(s_start + slice_step, n_slice)
             data_chunk = corrected[e_start:e_end, s_start:s_end, ...]
 
@@ -708,7 +695,7 @@ def phase_extraction(navigator, noise):
     noise     -- shape : (j, c)       -> (samples, coils)
     """
 
-    phase_correction = navigator.squeeze().transpose(2, 1, 0, 3)
+    phase_correction = navigator.squeeze()
     # subtract first navigator phase to remove static phase contributions
     phase_correction = (phase_correction * np.exp(-1j*np.angle(phase_correction[:, [0], :, :]))).astype(np.complex64)  # (samples=768, lines=384, slices=15, coils=(4,8,...))
 
