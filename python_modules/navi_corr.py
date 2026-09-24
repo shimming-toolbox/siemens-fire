@@ -724,9 +724,16 @@ def phase_extraction(navigator, noise):
     noise     -- shape : (j, c)       -> (samples, coils)
     """
 
-    phase_correction = navigator.squeeze()
-    # subtract first navigator phase to remove static phase contributions
-    phase_correction = (phase_correction * np.exp(-1j*np.angle(phase_correction[:, [0], :, :]))).astype(np.complex64)  # (samples=768, lines=384, slices=15, coils=(4,8,...))
+    navigator = navigator.squeeze()
+
+    # Normalize each navigator to unit magnitude
+    nav_unit = navigator / (np.abs(navigator) + 1e-8)
+    # Circular mean of navigator phases over lines
+    nav_ref = np.mean(nav_unit, axis=1, keepdims=True)
+    # Mean reference phase
+    phi_ref = np.angle(nav_ref)
+    # Remove static phase
+    phase_correction = (navigator * np.exp(-1j * phi_ref)).astype(np.complex64) # (samples=768, lines=384, slices=15, coils=(4,8,...))
 
     w = np.abs(phase_correction) / np.std(noise, axis=0)   # (768, 384, 15, coils=(4,8,...))  (TODO: check if should need to raise to power 2)
     # RuntimeWarning here because of dividing by zero
