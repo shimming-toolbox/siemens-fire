@@ -9,7 +9,8 @@ ENV TZ=America/Toronto
 # Install system dependencies
 RUN apt-get update && \
     apt-get install -y lsof git make curl sudo xvfb bzip2 gcc g++ python3-pip \
-                    libglib2.0-0 libgl1 libxrender1 libxkbcommon-x11-0 libdbus-1-3 cmake && \
+                    libglib2.0-0 libgl1 libxrender1 libxkbcommon-x11-0 libdbus-1-3 cmake \
+                    libhdf5-dev pkg-config && \
     apt-get clean
 
 # Clone the shimming-toolbox repository and install it
@@ -53,6 +54,10 @@ RUN sct_deepseg spinalcord -install
 
 # Install specific versions
 RUN pip install numpy==1.26.4 h5py==3.14.0
+
+# Install ismrmrdtools
+Run cd /opt/code/ismrmrd-python-tools && \
+    pip install .
 
 # Clone the mrd2nii repository and install it
 RUN mkdir -p /opt/code/mrd2nii && \
