@@ -10,11 +10,14 @@
         "Comment: scanner-coil-order if shim_method is slicewise": "Output file format will be slicewise-hrd and can directly be read by a supported slicewise shim sequence. Shim orders need to be 0 and/or 1.",
 
         "optimizer-method": "pseudo_inverse",
-        "Comment: Allowed optimizer-method options": ["pseudo_inverse", "least_squares", "quad_prog", "bfgs"],
+        "Comment: Allowed optimizer-method options": ["lin_lsq", "pseudo_inverse", "slsqp", "quad_prog", "bfgs"],
 
         "optimizer-criteria": "rmse",
-        "Comment: Allowed optimizer-criteria options": ["rmse", "mse", "mae", "grad", "pseudo_huber"],
+        "Comment: Allowed optimizer-criteria options (for slsqp and bfgs)": ["rmse", "mse", "mae", "grad", "pseudo_huber"],
         
+        "opt-cs": "shim-cs",
+        "Comment: Allowed opt-cs options": ["shim-cs", "gradient-cs"],
+
         "regularization-factor": "0.1",
         "Comment: regularization-factor": "Regularization factor for the optimization problem. Higher values will favour lower shim currents at the expense of shim quality.",
 

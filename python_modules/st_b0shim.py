@@ -132,21 +132,29 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
     else:
         raise ValueError("Unreachable: Invalid shim method: " + slices_option)
 
-    ret = subprocess.run(['st_b0shim', 'dynamic',
-                    '--fmap', fname_fmap,
-                    '--target', fname_mag,
-                    '--mask', fname_mask,
-                    '--slices', slices_option,
-                    '--scanner-coil-order', mrdhelper.get_json_config_param(config_dict, 'scanner-coil-order', default='0,1', type='str'),
-                    '--optimizer-method', mrdhelper.get_json_config_param(config_dict, 'optimizer-method', default='pseudo_inverse', type='str'),
-                    '--optimizer-criteria', mrdhelper.get_json_config_param(config_dict, 'optimizer-criteria', default='rmse', type='str'),
-                    '--regularization-factor', str(mrdhelper.get_json_config_param(config_dict, 'regularization-factor', default=0.1, type='float')),
-                    '--weighting-signal-loss', str(mrdhelper.get_json_config_param(config_dict, 'weighting-signal-loss', default=10, type='float')),
-                    '--mask-dilation-kernel-size', str(mrdhelper.get_json_config_param(config_dict, 'mask-dilation-kernel-size', default=5, type='int')),
-                    '--off-channels', mrdhelper.get_json_config_param(config_dict, 'off-channels', default='', type='str'),
-                    '--output-file-format-scanner', output_file_format_scanner,
-                    '-o', b0shimFolder],
+    cmd = ['st_b0shim', 'dynamic',
+           '--fmap', fname_fmap,
+           '--target', fname_mag,
+           '--mask', fname_mask,
+           '--slices', slices_option,
+           '--scanner-coil-order', mrdhelper.get_json_config_param(config_dict, 'scanner-coil-order', default='0,1', type='str'),
+           '--optimizer-method', mrdhelper.get_json_config_param(config_dict, 'optimizer-method', default='pseudo_inverse', type='str'),
+           '--optimizer-criteria', mrdhelper.get_json_config_param(config_dict, 'optimizer-criteria', default='rmse', type='str'),
+           '--regularization-factor', str(mrdhelper.get_json_config_param(config_dict, 'regularization-factor', default=0.1, type='float')),
+           '--weighting-signal-loss', str(mrdhelper.get_json_config_param(config_dict, 'weighting-signal-loss', default=10, type='float')),
+           '--mask-dilation-kernel-size', str(mrdhelper.get_json_config_param(config_dict, 'mask-dilation-kernel-size', default=5, type='int')),
+           '--opt-cs', mrdhelper.get_json_config_param(config_dict, 'opt-cs', default='shim-cs', type='str'),
+           '--off-channels', mrdhelper.get_json_config_param(config_dict, 'off-channels', default='', type='str'),
+           '--output-file-format-scanner', output_file_format_scanner,
+           '-o', b0shimFolder
+           ]
+    logging.info("Running st_b0shim with command: %s", ' '.join(cmd))
+    ret = subprocess.run(cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
                     check=True)
+    logging.info(ret.stdout)
     
     if ret.returncode != 0:
         raise RuntimeError(f"st_b0shim failed with return code: {ret.returncode}. stdout: {ret.stdout}, stderr: {ret.stderr}")
