@@ -30,13 +30,16 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from mrd2nii.mrd2nii_main import mrd2nii_volume, mrd2nii_stack
 from shimmingtoolbox.coils.coil import ScannerCoil
+from shimmingtoolbox.shim.shim_utils import gradient_to_phys_cs, get_flip_matrix
 
 
 # Folder for debug output files
 debugFolder = None
 dataFolder = os.path.abspath("/tmp/share/saved_data")
-fname_all_currents = None
-fname_currents_per_volume = None
+fname_all_currents_gradcs = None
+fname_all_currents_shimcs = None
+fname_currents_per_volume_gradcs = None
+fname_currents_per_volume_shimcs = None
 fname_solution = None
 
 
@@ -44,6 +47,8 @@ NB_CHANNELS_TO_SEND_TO_SEQ = 4
 default_f0 = [-100, 100]
 default_grad = [-0.2, 0.2]
 sum_cstr = np.inf
+fname_target = None
+is_fname_target_ready = False
 
 # Signal interrupt for bb_block
 is_sigint = False
@@ -180,18 +185,26 @@ def process_worker_results(result_queue):
 def send_coefs_to_scanner(send_to_scanner_queue, print_queue, connection):
     print_queue.put("Starting thread to send coefs to Scanner (in thread)")
     n_currents = 0
+    # Used to convert from RAS to LAI
+    flip = get_flip_matrix('LAI', 'SIEMENS', [1,])
     
     while True:
+        print_queue.put("Waiting for currents to send to scanner")
         currents = send_to_scanner_queue.get()
         
         # None is sent if the thread is stopped
         if currents is not None:
             n_currents += 1
-            print_queue.put(f"Sending currents to scanner: {currents.currents}, slice: {currents.slice}")
+            # x, y and z are in RAS CS, we need to convert them to the scanner CS (LAI) before sending them to the scanner
+            x, y, z = gradient_to_phys_cs(*currents.currents[1:4], fname_target)
+            
+            currents_xyz = [currents.currents[0], flip[0] * x, flip[1] * y, flip[2] * z]
+
+            print_queue.put(f"Sending currents to scanner. gradient: {currents.currents}, world: {currents_xyz}, slice: {currents.slice}")
             feedback_data = MyFeedbackData()
             feedback_data.slice_nb = currents.slice
             for i in range(NB_CHANNELS_TO_SEND_TO_SEQ):
-                feedback_data.currents[i] = currents.currents[i]
+                feedback_data.currents[i] = currents_xyz[i]
 
             try:
                 connection.send_feedback("nomad_current", feedback_data)
@@ -231,8 +244,25 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
             currents_per_volume[nifti_slice, current.repetition, :] = a_cur
 
         logging.info("Processed currents")
-        np.save(fname_all_currents, all_currents)
-        np.save(fname_currents_per_volume, currents_per_volume)
+        np.save(fname_all_currents_gradcs, all_currents)
+        np.save(fname_currents_per_volume_gradcs, currents_per_volume)
+
+        # Used to convert from RAS to LAI
+        flip = get_flip_matrix('LAI', 'SIEMENS', [1,])
+
+        # Convert currents from gradient CS to shim CS
+        for i_slice in range(nb_slices):
+            for i_rep in range(nb_repetitions + 1):
+                if not np.isnan(currents_per_volume[i_slice, i_rep, 0]):
+                    # Apply the flip matrix to convert from RAS to LAI
+                    f0, x, y, z, f = currents_per_volume[i_slice, i_rep, :]
+                    currents_per_volume[i_slice, i_rep, :] = [f0] + list(gradient_to_phys_cs(flip[0] * x, flip[1] * y, flip[2] * z, fname_target)) + [f]
+                    f0, x, y, z, f = all_currents[i_slice, i_rep, :]
+                    all_currents[i_slice, i_rep, :] = [f0] + list(gradient_to_phys_cs(flip[0] * x, flip[1] * y, flip[2] * z, fname_target)) + [f]
+
+        np.save(fname_currents_per_volume_shimcs, currents_per_volume)
+        np.save(fname_all_currents_shimcs, all_currents)
+
         return opt_currents
     
     logging.info("Stopping NomadOpt")
@@ -256,7 +286,7 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
 
     logging.info("Stopping worker thread")
     for i, worker in enumerate(workers):
-        logging.info(f"Stopped worker {i}")
+        logging.info(f"Stopping worker {i}")
         worker.join()
 
     for i, q in enumerate(f_queues):
@@ -270,7 +300,7 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
     result_currents = result_thread.join()
     opt_currents = process_results(result_currents, nb_slices, nb_repetitions, chronological_to_nifti_ordering)
 
-    def write_text_file(data, nb_slices, fatsat):
+    def write_text_file(data, nb_slices, fatsat, fname):
         logging.info("Writing currents to text file")
 
         def parse_chrono_to_nifti_2_nifti_to_chrono(chrono_to_nifti):
@@ -293,7 +323,7 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
         # Output file is nifti ordered, not chronologically ordered so we need to convert
         nifti_to_chrono = parse_chrono_to_nifti_2_nifti_to_chrono(chronological_to_nifti_ordering)
 
-        with open(fname_solution, 'w') as f:
+        with open(fname, 'w') as f:
             for i_slice_nifti_idx in range(nb_slices):
                 a_slice_chrono_idx = nifti_to_chrono[i_slice_nifti_idx]
                 if fatsat:
@@ -301,17 +331,24 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
                         f.write(f"0.0, ")
                     f.write("\n")
                 for i_channel in range(NB_CHANNELS_TO_SEND_TO_SEQ):
-                    f.write(f"{data[a_slice_chrono_idx, i_channel]}, ")
+                    f.write(f"{data[a_slice_chrono_idx, i_channel]:.6f}, ")
                 f.write("\n")
-        logging.info(f"Currents written to {fname_solution}")
+        logging.info(f"Currents written to {fname}")
 
     # Write the currents to a text file
-    write_text_file(opt_currents, nb_slices, fatsat)
+    write_text_file(opt_currents, nb_slices, fatsat, fname_solution.replace(".txt", "_gradientcs.txt"))
+    # Convert optimal currents from gradient CS to shim CS
+    flip = get_flip_matrix('LAI', 'SIEMENS', [1,])
+    opt_currents_shimcs = copy.deepcopy(opt_currents)
+    for i_slice in range(nb_slices):
+        f0, x, y, z = opt_currents[i_slice, :]
+        opt_currents_shimcs[i_slice, :] = [f0] + list(gradient_to_phys_cs(flip[0] * x, flip[1] * y, flip[2] * z, fname_target))
+    write_text_file(opt_currents_shimcs, nb_slices, fatsat, fname_solution)
     shutil.copyfile(fname_solution, os.path.join(dataFolder, "scanner_shim.txt"))
 
     # Create interactive plot of the objective function and the currents
     opt_channels = [channel for channel in channels_to_shim]
-    create_obj_interactive_plot(fname_currents_per_volume, path_output=os.path.join(debugFolder, 'obj_plots'), opt_channels=opt_channels)
+    create_obj_interactive_plot(fname_currents_per_volume_gradcs, path_output=os.path.join(debugFolder, 'obj_plots'), opt_channels=opt_channels)
 
     logging.info("Processing print queue")
     print_queue.put(None)
@@ -319,7 +356,10 @@ def stop(send_to_scanner_thread, nomad_instance_stopped, workers, result_queue, 
     for message in messages:
         logging.info(message)
     print_queue.join()
+    logging.info("Optimal currents in gradcs")
     logging.info(opt_currents)
+    logging.info("Optimal currents in shimcs")
+    logging.info(opt_currents_shimcs)
 
 
 def process(connection, config, metadata):
@@ -346,7 +386,7 @@ def process(connection, config, metadata):
     objective = mrdhelper.get_json_config_param(config_dict, "objective", default="Sig int")
     use_f0_offset_from_gradients = mrdhelper.get_json_config_param(config_dict, "use_f0_offset_from_gradients", default=True, type="bool")
 
-    global debugFolder, fname_solution, is_obj_with_sigint, is_obj_with_mi, is_obj_with_fmap, fname_all_currents, fname_currents_per_volume
+    global debugFolder, fname_solution, is_obj_with_sigint, is_obj_with_mi, is_obj_with_fmap, fname_all_currents_gradcs, fname_all_currents_shimcs, fname_currents_per_volume_gradcs, fname_currents_per_volume_shimcs
     is_obj_with_sigint = False
     is_obj_with_mi = False
     is_obj_with_fmap = False
@@ -380,8 +420,10 @@ def process(connection, config, metadata):
         shutil.rmtree(debugFolder)
     os.makedirs(debugFolder)
     fname_solution = os.path.join(debugFolder, "scanner_shim.txt")
-    fname_all_currents = os.path.join(debugFolder, f"all_currents.npy")
-    fname_currents_per_volume = os.path.join(debugFolder, f"currents_per_volume.npy")
+    fname_all_currents_gradcs = os.path.join(debugFolder, f"all_currents_gradcs.npy")
+    fname_all_currents_shimcs = os.path.join(debugFolder, f"all_currents_shimcs.npy")
+    fname_currents_per_volume_gradcs = os.path.join(debugFolder, f"currents_per_volume_gradcs.npy")
+    fname_currents_per_volume_shimcs = os.path.join(debugFolder, f"currents_per_volume_shimcs.npy")
 
     # Metadata should be MRD formatted header, but may be a string
     try:
@@ -458,23 +500,8 @@ def process(connection, config, metadata):
     square_mask_coords = None
 
     f0_bounds = ast.literal_eval(mrdhelper.get_json_config_param(config_dict, "f0_bounds", default=str(default_f0)))
+    # xyz bounds are in gradient CS (x: RO, y: PE, z: SL)
     xyz_bounds = ast.literal_eval(mrdhelper.get_json_config_param(config_dict, "xyz_bounds", default=str(default_grad)))
-
-    if use_surrogate or is_obj_with_fmap:
-        nii_fmap, json_data = find_and_read_fmap_within_data()
-        isocenter = get_isocenter(json_data)
-        st_scanner_constraints = {"name": "scanner",
-                                  "coef_sum_max": sum_cstr,
-                                  "coef_channel_minmax": {"0": [f0_bounds],
-                                                          "1": [xyz_bounds,
-                                                                xyz_bounds,
-                                                                xyz_bounds]}}
-        scanner_coil = ScannerCoil(nii_fmap.shape[:3], nii_fmap.affine, constraints=st_scanner_constraints, orders=(0, 1),
-                                   manufacturer="Siemens", isocenter=isocenter)
-        nii_coil = nib.Nifti1Image(scanner_coil.profile, nii_fmap.affine, header=nii_fmap.header)
-        nii_orig_coil_profiles = nii_coil
-        nii_coil_profiles = nii_orig_coil_profiles
-        # resample_from_to(nii_orig_coil_profiles, nii_fmap,  order=1, mode='grid-constant',  cval=0)
 
     if use_surrogate:
         logging.info("Using surrogate model")
@@ -492,6 +519,9 @@ def process(connection, config, metadata):
         slice_loc_queues = [Queue() for _ in range(nb_slices)]
     else:
         slice_loc_queues = None
+
+    # Misc queues. Use to send the fname of the target for now.
+    misc_queues = [Queue() for _ in range(nb_slices)] 
 
     print_queue_thread = ReturnThread(target=process_print_queue, args=(print_queue,))
     print_queue_thread.start()
@@ -555,7 +585,9 @@ def process(connection, config, metadata):
             obj_fmap_queues[i] if obj_fmap_queues is not None else None,
             channels_to_shim,
             use_f0_offset_from_gradients,
-            slice_loc_queues[i] if slice_loc_queues is not None else None)
+            slice_loc_queues[i] if slice_loc_queues is not None else None,
+            misc_queues[i] if misc_queues is not None else None,
+            debugFolder)
         )
         worker.start()
         workers.append(worker)
@@ -612,7 +644,11 @@ def process(connection, config, metadata):
                         if im_missing_to_complete_one_volume <= 0:
                             # Convert target from mrd 2 NIfTI
                             nii, json_data = mrd2nii_volume(metadata, volume_images)
-                            nib.save(nii, f"{debugFolder}/nii_target.nii.gz")
+                            global fname_target
+                            fname_target = os.path.join(debugFolder, "nii_target.nii.gz")
+                            nib.save(nii, fname_target)
+                            [misc_queues[i].put(fname_target) for i in range(nb_slices)]
+
                             with open(f"{debugFolder}/nii_target.json", 'w') as outfile:
                                 json.dump(json_data, outfile, indent=2)
 
@@ -639,6 +675,27 @@ def process(connection, config, metadata):
 
                             # We need to convert the mask in the same geometry as the fmap to use the surrogate
                             if is_obj_with_fmap or use_surrogate:
+                                nii_fmap, json_data_fmap = find_and_read_fmap_within_data()
+                                isocenter_fmap = get_isocenter(json_data_fmap)
+                                st_scanner_constraints = {"name": "scanner",
+                                                          "coef_sum_max": sum_cstr,
+                                                          "coef_channel_minmax": {"0": [f0_bounds],
+                                                                                "1": [[-np.inf, np.inf],
+                                                                                        [-np.inf, np.inf],
+                                                                                        [-np.inf, np.inf]]
+                                # xyz bounds are in gradient CS (x: RO, y: PE, z: SL), this is expecting it in world coords, we could convert them, but we don't use these bounds for anything.
+                                                        #"coef_channel_minmax": {"0": [f0_bounds], 
+                                                        #                        "1": [xyz_bounds, 
+                                                        #                              xyz_bounds,
+                                                        #                              xyz_bounds]
+                                                                                        }}
+                                scanner_coil = ScannerCoil(nii_fmap.shape[:3], nii_fmap.affine, constraints=st_scanner_constraints, orders=(0, 1),
+                                                           manufacturer="Siemens", isocenter=isocenter_fmap, opt_cs='gradient-cs', fname_target=fname_target)
+                                nii_coil = nib.Nifti1Image(scanner_coil.profile, nii_fmap.affine, header=nii_fmap.header)
+                                nii_orig_coil_profiles = nii_coil
+                                nii_coil_profiles = nii_orig_coil_profiles
+                                # resample_from_to(nii_orig_coil_profiles, nii_fmap,  order=1, mode='grid-constant',  cval=0)
+
                                 # Mask needs to be resampled to the target
                                 slices = [(i,) for i in range(nb_slices)]
                                 results_mask = Parallel(-1, backend='loky')(
@@ -666,6 +723,7 @@ def process(connection, config, metadata):
                                 if use_surrogate:
                                     # Send the mask when we have it so that the surrogate opt can start processing
                                     for i in range(nb_slices):
+                                        surr_queues[i].put(fname_target)
                                         surr_queues[i].put(mask_per_slice)
                                         surr_queues[i].put(time_ordering)
                                         surr_queues[i].put(list_max_rmse)
@@ -750,7 +808,10 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
 
     currents_applied = True if item.user_int[5] == 1 else False
     # Todo: TEMP
-    #currents_applied = True
+    # if item.getHead().repetition > 0 and slice_mrd == 0:
+    #     currents_applied = True
+    # else:
+    #     currents_applied = False
 
     logging.info(f"B0 offset: {item.user_int[6] - (2 ** 16) if item.user_int[6] > 2 ** 15 else item.user_int[6]}")
 
@@ -778,7 +839,7 @@ def process_image(item, mrd_idx_to_order_idx, metadata, nomad_instance_stopped, 
         f_queues[slice_mrd].put((obj, item.getHead().repetition))
         logging.info(f"Slice {slice_mrd}, repetition {item.getHead().repetition}: objective: {obj}")
     else:
-        logging.info(f"Image received for slice: {slice_mrd}, but no currents were applied")
+        logging.info(f"Image received for slice: {slice_mrd}, but no currents were applied (repetition {item.getHead().repetition})")
         return 0, nomad_instance_stopped
 
     return 1, nomad_instance_stopped
@@ -806,9 +867,12 @@ def calculate_obj_function(use_sig_int, use_mi, nii_slice, mask, nii_anat_epi_sp
 
 def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queue, result_queue, send_to_scanner_queue,
                    print_queue, use_surrogate, surr_queue, nii_fmap, nii_coil_profiles, use_fmap_obj, obj_fmap_queue, channels_to_shim, use_f0_offset_from_gradients,
-                   slice_loc_queue):
-    fname_cache = os.path.join(debugFolder, f"cache_slice{i_slice}.txt")
-    fname_stats = os.path.join(debugFolder, f"stats_slice{i_slice}.txt")
+                   slice_loc_queue, misc_queue, debug_folder):
+    print_queue.put(f"Starting Nomad instance for slice {i_slice}, in process")
+
+    fname_cache = os.path.join(debug_folder, f"cache_slice{i_slice}.txt")
+    fname_stats = os.path.join(debug_folder, f"stats_slice{i_slice}.txt")
+
     granularity = "("
     if "f" in channels_to_shim:
         granularity += "1 "
@@ -819,6 +883,7 @@ def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queu
     if "z" in channels_to_shim:
         granularity += "0.001 "
     granularity = granularity[:-1] + ")"
+
     bb_params = [
         f"DIMENSION {nb_channels}",
         "BB_MAX_BLOCK_SIZE 3",
@@ -827,16 +892,16 @@ def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queu
         f"CACHE_FILE {fname_cache}",
         f"STATS_FILE {fname_stats}",
         f"GRANULARITY {granularity}",
-        # "EVAL_USE_CACHE false"
+        # "EVAL_USE_CACHE false",
         "LH_SEARCH 10 1"
     ]
+    print_queue.put(f"Nomad instance {i_slice} bb_params: {bb_params}")
 
     if use_fmap_obj:
         bb_params.append("BB_OUTPUT_TYPE OBJ EB EB")
     else:
         bb_params.append("BB_OUTPUT_TYPE OBJ EB")
 
-    print_queue.put(f"Starting Nomad instance for slice {i_slice}, in process")
     if use_surrogate:
         # bb_params.append('VNS_MADS_SEARCH_WITH_SURROGATE true')
         bb_params.append('SURROGATE_MAX_BLOCK_SIZE 10')
@@ -854,6 +919,7 @@ def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queu
                                  obj_fmap_queue=obj_fmap_queue,
                                  channels_to_shim=channels_to_shim,
                                  use_f0_offset_from_gradients=use_f0_offset_from_gradients,
+                                 misc_queue=misc_queue,
                                  slice_loc_queue=slice_loc_queue),
                          x0, lb, ub, bb_params, partial(surrogate, i_slice=i_slice,
                                                         surr_queue=surr_queue,
@@ -879,21 +945,30 @@ def nomad_instance(i_slice, x0, lb, ub, nb_channels, max_evals, sum_cstr, f_queu
                                  obj_fmap_queue=obj_fmap_queue,
                                  channels_to_shim=channels_to_shim,
                                  use_f0_offset_from_gradients=use_f0_offset_from_gradients,
+                                 misc_queue=misc_queue,
                                  slice_loc_queue=slice_loc_queue),
                          x0, lb, ub, bb_params)
     print_queue.put(f"Exited Nomad instance {i_slice}: {a}")
 
 
 def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, result_queue: Queue, print_queue, nii_fmap,
-             nii_coil_profiles, use_fmap_obj, obj_fmap_queue, channels_to_shim, use_f0_offset_from_gradients, slice_loc_queue):
+             nii_coil_profiles, use_fmap_obj, obj_fmap_queue, channels_to_shim, use_f0_offset_from_gradients, misc_queue, slice_loc_queue):
+    print_queue.put(f"(bb_block) In Nomad instance {i_slice} evaluating block of size {block.size()}")
+    
     nb_points = block.size()
     eval_ok = [False for _ in range(nb_points)]
     skips = [False for _ in range(nb_points)]
 
     global is_sigint
     if is_sigint:
-        print_queue.put(f"Nomad instance {i_slice} interrupted")
+        print_queue.put(f"(bb_block) Nomad instance {i_slice} interrupted")
         return eval_ok
+
+    global is_fname_target_ready, fname_target
+    if not is_fname_target_ready:
+        print_queue.put(f"(bb_block) Nomad instance {i_slice} waiting for fname_target")
+        fname_target = misc_queue.get()
+        is_fname_target_ready = True
 
     b0_rmse_list = []
     if use_fmap_obj:
@@ -904,27 +979,36 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
             list_max_rmse = obj_fmap_queue.get()
             is_obj_with_fmap_ready = True
         a_slice = obj_time_ordering_to_nifti_slices[i_slice][0]
-        print_queue.put(f"Objective function using fmap {i_slice}")
+        print_queue.put(f"(bb_block) Objective function using fmap {i_slice}")
 
     if use_f0_offset_from_gradients:
         global is_slice_loc_ready, slice_loc, target_iso
         if not is_slice_loc_ready:
+            print_queue.put(f"(bb_block) Nomad instance {i_slice} waiting for slice location and target isocenter")
             slice_loc = slice_loc_queue.get()
             target_iso = slice_loc_queue.get()
             is_slice_loc_ready = True
 
-
     # Send the points to the scanner
     for i in range(nb_points):
         x = block.get_x(i)
-        coefs = [x.get_coord(i) for i in range(x.size())]
-        
+        coefs = [x.get_coord(j) for j in range(x.size())]
+        print_queue.put(f"(bb_block) Nomad instance {i_slice}, {coefs} (Raw coefs)")
+
         coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
+        print_queue.put(f"(bb_block) Nomad instance {i_slice} fill_non_opt_currents_with_0s: {coefs_to_send_to_scanner_mt}")
+        
         if use_f0_offset_from_gradients:
-            f0_offset = calculate_f0_from_gradients(coefs_to_send_to_scanner_mt[1:], target_iso, slice_loc)
+            xyz_coefs_ras = gradient_to_phys_cs(*coefs_to_send_to_scanner_mt[1:], fname_target)
+            print_queue.put(f"(bb_block) Nomad instance {i_slice} xyz_coefs_ras: {xyz_coefs_ras}")
+            f0_offset = calculate_f0_from_gradients(xyz_coefs_ras, target_iso, slice_loc)
+            print_queue.put(f"(bb_block) Nomad instance {i_slice} calculate_f0_from_gradients: {f0_offset}")
             coefs_to_send_to_scanner_mt = [round(-f0_offset + coefs_to_send_to_scanner_mt[0])] + coefs_to_send_to_scanner_mt[1:]
+            print_queue.put(f"(bb_block) Nomad instance {i_slice} coefs with f0 offset: {coefs_to_send_to_scanner_mt}")
+
         # Scale from mT/m to uT/m for the gradients
         coefs_to_send_to_scanner_ut = mult_grads_by_1000(coefs_to_send_to_scanner_mt)
+        print_queue.put(f"(bb_block) Nomad instance {i_slice} mult_grads_by_1000: {coefs_to_send_to_scanner_ut}")
 
         # Skip if it does not respect constraints
         skips[i] = np.sum(np.abs(coefs)) > sum_cstr
@@ -936,19 +1020,19 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
         if skips[i]:
             continue
         currents = Currents(coefs_to_send_to_scanner_mt, i_slice)
-        # print_queue.put(f"Sending currents to Scanner: {currents.currents}, Slice: {currents.slice}")
+        
         send_to_scanner_queue.put(currents)
 
     for k in range(nb_points):
         x = block.get_x(k)
-        coefs = [x.get_coord(i) for i in range(x.size())]
+        coefs = [x.get_coord(j) for j in range(x.size())]
         cst = np.sum(np.abs(coefs)) - sum_cstr
         if skips[k]:
             # skipped because it did not respect the constraints
             ans = str(1) + " " + str(cst)
             if use_fmap_obj:
                 ans += " " + str(b0_rmse_list[k] - list_max_rmse[i_slice])
-            print_queue.put(f"Skipping since constraints not respected for slice {i_slice} with coefs: {coefs}, {ans=}")
+            print_queue.put(f"(bb_block) Skipping since constraints not respected for slice {i_slice} with coefs: {coefs}, {ans=}")
             x.setBBO(ans.encode("UTF-8"))
             eval_ok[k] = 1
             continue
@@ -957,7 +1041,7 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
         if a_tuple is None:
             # We put None in the queue to tell the nomad instance to stop
             is_sigint = True
-            print_queue.put(f"Killing Nomad instance {i_slice}")
+            print_queue.put(f"(bb_block) Nomad instance {i_slice} received None, stopping...")
             os.kill(os.getpid(), signal.SIGINT)
             return eval_ok
 
@@ -968,13 +1052,14 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
             ans += " " + str(b0_rmse_list[k] - list_max_rmse[i_slice])
         x.setBBO(ans.encode("UTF-8"))
         if result_queue.full():
-            print_queue.put(f"Queue is full from nomad instance:{i_slice}")
-        print_queue.put(f"Adding to result_queue for slice:{i_slice}")
+            print_queue.put(f"(bb_block) Queue is full from nomad instance:{i_slice}")
+        print_queue.put(f"(bb_block) Adding to result_queue for slice:{i_slice}. Ans: {ans}, coefs: {coefs}, f: {f}, repetition: {repetition}")
 
         # Add 0s for channels that are not optimized
         coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
         if use_f0_offset_from_gradients:
-            f0_offset = calculate_f0_from_gradients(coefs_to_send_to_scanner_mt[1:], target_iso, slice_loc)
+            xyz_coefs_ras = gradient_to_phys_cs(*coefs_to_send_to_scanner_mt[1:], fname_target)
+            f0_offset = calculate_f0_from_gradients(xyz_coefs_ras, target_iso, slice_loc)
             coefs_to_send_to_scanner_mt = [round(-f0_offset + coefs_to_send_to_scanner_mt[0])] + coefs_to_send_to_scanner_mt[1:]
 
         result_queue.put(Currents(coefs_to_send_to_scanner_mt, i_slice, f, repetition))
@@ -984,9 +1069,10 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
 
 
 def surrogate(block, i_slice, surr_queue, nii_fmap, nii_coil_profiles, print_queue, sum_cstr, use_fmap_obj, channels_to_shim, use_f0_offset_from_gradients):
-
-    global is_surrogate_ready, surr_mask, time_ordering_to_nifti_slices, list_max_rmse, slice_loc, target_iso
+    
+    global is_surrogate_ready, surr_mask, time_ordering_to_nifti_slices, list_max_rmse, slice_loc, target_iso, fname_target
     if not is_surrogate_ready:
+        fname_target = surr_queue.get()
         surr_mask = surr_queue.get()
         time_ordering_to_nifti_slices = surr_queue.get()
         list_max_rmse = surr_queue.get()
@@ -1004,8 +1090,10 @@ def surrogate(block, i_slice, surr_queue, nii_fmap, nii_coil_profiles, print_que
         coefs = [x.get_coord(i) for i in range(x.size())]
         coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
         if use_f0_offset_from_gradients:
-            f0_offset = calculate_f0_from_gradients(coefs_to_send_to_scanner_mt[1:], target_iso, slice_loc)
+            xyz_coefs_ras = gradient_to_phys_cs(*coefs_to_send_to_scanner_mt[1:], fname_target)
+            f0_offset = calculate_f0_from_gradients(xyz_coefs_ras, target_iso, slice_loc)
             coefs_to_send_to_scanner_mt = [-f0_offset + coefs_to_send_to_scanner_mt[0]] + coefs_to_send_to_scanner_mt[1:]
+
         # Scale from mT/m to uT/m for the gradients
         coefs_to_send_to_scanner_ut = mult_grads_by_1000(coefs_to_send_to_scanner_mt)
         # Constraints
@@ -1343,7 +1431,6 @@ def calculate_f0_from_gradients(grads, iso, location) -> float:
         float: f0 offset in Hz
     """
     gamma = 42.577478518e6  # Hz/T
-    f0_offset = 0
 
     # Convert mT/m to T/m and multiply by position difference in m
     x_offset = grads[0] * 1e-3 * ((location[0] - iso[0]) * 1e-3)
@@ -1354,7 +1441,10 @@ def calculate_f0_from_gradients(grads, iso, location) -> float:
     # x gradient increases field when going to the Left (negative x in RAS)
     # y gradient increases field when going to the Anterior (positive y in RAS)
     # z gradient increases field when going to the Inferior (negative z in RAS)
-    f0_offset = -x_offset + y_offset - z_offset
+    # f0_offset = -x_offset + y_offset - z_offset
+    
+    # Calling functions was changed to input RAS instead of LAI, we keep code above for reference
+    f0_offset = x_offset + y_offset + z_offset
     f0_offset_hz = f0_offset * gamma
 
     return f0_offset_hz
