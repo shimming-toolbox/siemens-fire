@@ -28,6 +28,8 @@
         "Comment: mask-dilation-kernel-size": "Kernel size for the dilation of the mask. Useful to ensure the shimmed region is large enough in the through slice direction when slicewise shimming.",
         
         "off-channels": "",
-        "Comment: off-channels": "Comma-separated list of channels to be turned off during the shim optimization. The list depends on the value of 'scanner-coil-order'. Example: (scanner-coil-order: 0,1,2) 0,2,4 to turn off f0, y and z2, (scanner-coil-order: 1,2) 0,2,4 to turn off x, z and zx). If empty, all channels will be used."
+        "Comment: off-channels": "Comma-separated list of channels to be turned off during the shim optimization. The list depends on the value of 'scanner-coil-order'. Example: (scanner-coil-order: 0,1,2) 0,2,4 to turn off f0, y and z2, (scanner-coil-order: 1,2) 0,2,4 to turn off x, z and zx). If empty, all channels will be used.",
+        
+        "Comment": "There is a general utility that will convert the file located at share/saved_data/coefs_gradientcs.txt to coefs_shimcs.txt allowing to convert from the gradient cs to the shim cs"
     }
 }
