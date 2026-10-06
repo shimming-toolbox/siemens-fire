@@ -7,6 +7,7 @@ from joblib import Parallel, delayed
 import json
 import logging
 from multiprocessing import Process, Queue, JoinableQueue
+import multiprocessing as mp
 import nibabel as nib
 from nibabel.processing import resample_from_to as nib_resample_from_to
 import numpy as np
@@ -568,7 +569,8 @@ def process(connection, config, metadata):
     for i in range(nb_slices):
         logging.info(f"Starting nomad instance for slice {i}")
         nomad_instance_stopped[i] = False
-        worker = Process(target=nomad_instance, args=(
+        ctx = mp.get_context('fork')
+        worker = ctx.Process(target=nomad_instance, args=(
             i, x0, lb, ub,
             nb_channels_to_optimize,
             max_evals,
@@ -993,22 +995,22 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
     for i in range(nb_points):
         x = block.get_x(i)
         coefs = [x.get_coord(j) for j in range(x.size())]
-        print_queue.put(f"(bb_block) Nomad instance {i_slice}, {coefs} (Raw coefs)")
+        # print_queue.put(f"(bb_block) Nomad instance {i_slice}, {coefs} (Raw coefs)")
 
         coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
-        print_queue.put(f"(bb_block) Nomad instance {i_slice} fill_non_opt_currents_with_0s: {coefs_to_send_to_scanner_mt}")
+        # print_queue.put(f"(bb_block) Nomad instance {i_slice} fill_non_opt_currents_with_0s: {coefs_to_send_to_scanner_mt}")
         
         if use_f0_offset_from_gradients:
             xyz_coefs_ras = gradient_to_phys_cs(*coefs_to_send_to_scanner_mt[1:], fname_target)
-            print_queue.put(f"(bb_block) Nomad instance {i_slice} xyz_coefs_ras: {xyz_coefs_ras}")
+            # print_queue.put(f"(bb_block) Nomad instance {i_slice} xyz_coefs_ras: {xyz_coefs_ras}")
             f0_offset = calculate_f0_from_gradients(xyz_coefs_ras, target_iso, slice_loc)
-            print_queue.put(f"(bb_block) Nomad instance {i_slice} calculate_f0_from_gradients: {f0_offset}")
+            # print_queue.put(f"(bb_block) Nomad instance {i_slice} calculate_f0_from_gradients: {f0_offset}")
             coefs_to_send_to_scanner_mt = [round(-f0_offset + coefs_to_send_to_scanner_mt[0])] + coefs_to_send_to_scanner_mt[1:]
-            print_queue.put(f"(bb_block) Nomad instance {i_slice} coefs with f0 offset: {coefs_to_send_to_scanner_mt}")
+            # print_queue.put(f"(bb_block) Nomad instance {i_slice} coefs with f0 offset: {coefs_to_send_to_scanner_mt}")
 
         # Scale from mT/m to uT/m for the gradients
         coefs_to_send_to_scanner_ut = mult_grads_by_1000(coefs_to_send_to_scanner_mt)
-        print_queue.put(f"(bb_block) Nomad instance {i_slice} mult_grads_by_1000: {coefs_to_send_to_scanner_ut}")
+        # print_queue.put(f"(bb_block) Nomad instance {i_slice} mult_grads_by_1000: {coefs_to_send_to_scanner_ut}")
 
         # Skip if it does not respect constraints
         skips[i] = np.sum(np.abs(coefs)) > sum_cstr
@@ -1032,7 +1034,7 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
             ans = str(1) + " " + str(cst)
             if use_fmap_obj:
                 ans += " " + str(b0_rmse_list[k] - list_max_rmse[i_slice])
-            print_queue.put(f"(bb_block) Skipping since constraints not respected for slice {i_slice} with coefs: {coefs}, {ans=}")
+            # print_queue.put(f"(bb_block) Skipping since constraints not respected for slice {i_slice} with coefs: {coefs}, {ans=}")
             x.setBBO(ans.encode("UTF-8"))
             eval_ok[k] = 1
             continue
@@ -1053,7 +1055,7 @@ def bb_block(block, i_slice: int, sum_cstr, send_to_scanner_queue, f_queue, resu
         x.setBBO(ans.encode("UTF-8"))
         if result_queue.full():
             print_queue.put(f"(bb_block) Queue is full from nomad instance:{i_slice}")
-        print_queue.put(f"(bb_block) Adding to result_queue for slice:{i_slice}. Ans: {ans}, coefs: {coefs}, f: {f}, repetition: {repetition}")
+        # print_queue.put(f"(bb_block) Adding to result_queue for slice:{i_slice}. Ans: {ans}, coefs: {coefs}, f: {f}, repetition: {repetition}")
 
         # Add 0s for channels that are not optimized
         coefs_to_send_to_scanner_mt = fill_non_opt_currents_with_0s(coefs, channels_to_shim)
