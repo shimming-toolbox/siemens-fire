@@ -246,4 +246,4 @@ def test_st_b0shim_gre_slicewise_convert(tmpdir):
 
     with open(fname_converted_file_f0, 'r') as f:
         lines = f.readlines()
-        assert lines[1] == "-887.424812 | 0.035912 | 0.036466 | 0.203668\n"
+        assert lines[1] == "-879.359762 | 0.035912 | 0.036466 | 0.203668\n"

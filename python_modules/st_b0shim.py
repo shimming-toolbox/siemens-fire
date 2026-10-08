@@ -179,7 +179,7 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
         # - Text file must be slice-wise
         # - Sequence must not have SMS
         try:
-
+            logging.info("Converting gradient coefficients to shim coefficients")
             path_convert_coefs = os.path.join(debugFolder, "convert_coefs")
             if os.path.exists(path_convert_coefs):
                 shutil.rmtree(path_convert_coefs)
@@ -212,7 +212,9 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
             isocenter = get_isocenter(json_data)
             nii_mask = nib.load(fname_mask)
             nii_target = nib.load(fname_mag)
-            nii_mask_res = load_mask(nii_mask, nii_target, path_convert_coefs)
+            if nii_target.ndim == 4:
+                nii_target = nib.Nifti1Image(nii_target.get_fdata()[..., 0], affine=nii_target.affine, header=nii_target.header)
+            nii_mask_res = load_mask(nii_target, nii_mask, path_convert_coefs)
             n_slices = nii_target.shape[2]
 
             # Todo: This won't work for SMS acquisitions
