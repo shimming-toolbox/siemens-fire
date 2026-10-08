@@ -143,15 +143,20 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
     fname_output = os.path.join(shimFolder, "scanner_shim.txt")
     fname_applied_shims = os.path.join(dataFolder, "scanner_shim_last_acq.txt")
     try:
-        subprocess.run(['st_b0shim', 'max-intensity',
+        ret = subprocess.run(['st_b0shim', 'max-intensity',
                         '-i', fname_mag,
                         '--coefs', fname_applied_shims,
                         '--mask', fname_mask,
                         '-o', shimFolder],
+                        capture_output=True,
+                        text=True,
                         check=True)
+        logging.info("Command stdout: %s", ret.stdout)
+        logging.info("Command stderr: %s", ret.stderr)
     except subprocess.CalledProcessError as e:
         logging.error("st_b0shim failed with return code %d", e.returncode)
-        logging.error("Command output: %s", e.output)
+        logging.error("Command stdout: %s", e.stdout)
+        logging.error("Command stderr: %s", e.stderr)
         if os.path.exists(fname_output):
             os.remove(fname_output)
         return
