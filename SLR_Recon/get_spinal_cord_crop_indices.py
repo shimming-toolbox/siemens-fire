@@ -1,32 +1,9 @@
 import os
-import shutil
+import time
+import tempfile
 import subprocess
 import nibabel as nib
 import numpy as np
-
-
-def find_sct_path():
-    # 1. Environment variable override
-    if os.getenv("SCT_PATH"):
-        return os.environ["SCT_PATH"]
-
-    # 2. Check system PATH
-    for cmd in ["sct_deepseg", "sct_deepseg_sc"]:
-        executable = shutil.which(cmd)
-        if executable:
-            return executable
-
-    # 3. Check default ~/sct/bin/ path
-    for binary in ["sct_deepseg", "sct_deepseg_sc"]:
-        home_sct = os.path.expanduser(f"~/sct/bin/{binary}")
-        if os.path.exists(home_sct):
-            return home_sct
-
-    raise FileNotFoundError(
-        "Could not find Spinal Cord Toolbox!\n"
-        "Please ensure SCT is installed and added to your PATH, or set "
-        "export SCT_PATH='/path/to/sct_deepseg' in your terminal."
-    )
 
 
 def get_indices(
@@ -34,45 +11,44 @@ def get_indices(
     affine,
     id_num="unknown",
     r=150,
-    contrast="t2",
-    margin_x=20,
+    margin_x=10,
     margin_y=5,
     x_axis=0,
     y_axis=1,
+    task="spinalcord",
 ):
-    sct_cmd = find_sct_path()
+    t0 = time.time()
+    sct_binary = "/home/ge.polymtl.ca/p124290/spinalcordtoolbox_latest/bin/sct_deepseg"
 
-    temp_img_path = f"{id_num}_{r}_temp_sc_recon.nii.gz"
-    temp_seg_path = f"{id_num}_{r}_temp_sc_seg.nii.gz"
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmpdir:
+        temp_img_path = os.path.join(tmpdir, f"{id_num}_{r}_input.nii.gz")
+        temp_seg_path = os.path.join(tmpdir, f"{id_num}_{r}_seg.nii.gz")
 
-    # Save temporary NIfTI    
-    nifti_img = nib.Nifti1Image(img_3d.astype(np.float32), affine)
-    nib.save(nifti_img, temp_img_path)
+        nifti_img = nib.Nifti1Image(img_3d.astype(np.float32), affine)
+        nib.save(nifti_img, temp_img_path)
 
-    if "sct_deepseg_sc" in sct_cmd:
-        print("Using legacy sct_deepseg_sc command for spinal cord segmentation.")
-        # Legacy syntax
-        cmd_args = [sct_cmd, "-i", temp_img_path, "-c", contrast, "-o", temp_seg_path]
-    else:
-        # Modern sct_deepseg syntax (Task as positional argument)
-        cmd_args = [sct_cmd, "sc_canal_t2", "-i", temp_img_path, "-o", temp_seg_path]
+        run_env = os.environ.copy()
+        run_env.pop("PYTHONPATH", None)
+        run_env.pop("LD_LIBRARY_PATH", None)
+        run_env["CUDA_VISIBLE_DEVICES"] = "0"
 
-    try:
-        subprocess.run(cmd_args, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as e:
-        # Clean up files before raising error
-        for f in [temp_img_path, temp_seg_path]:
-            if os.path.exists(f): os.remove(f)
-        print("SCT STDERR:\n", e.stderr)
-        raise e
+        cmd_args = [sct_binary, task, "-i", temp_img_path, "-o", temp_seg_path]
 
-    seg_mask = nib.load(temp_seg_path).get_fdata()
+        t_infer_start = time.time()
+        try:
+            subprocess.run(
+                cmd_args,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=run_env
+            )
+        except subprocess.CalledProcessError as e:
+            print("SCT STDERR:\n", e.stderr)
+            raise e
+        t_infer = time.time() - t_infer_start
 
-    # Clean up temporary NIfTI files
-    '''
-    for f in [temp_img_path, temp_seg_path]:
-       if os.path.exists(f): os.remove(f)
-    '''
+        seg_mask = nib.load(temp_seg_path).get_fdata() > 0
 
     x_profile = np.sum(seg_mask, axis=tuple(i for i in range(seg_mask.ndim) if i != x_axis))
     x_nonzero = np.where(x_profile > 0)[0]
@@ -81,7 +57,7 @@ def get_indices(
     y_nonzero = np.where(y_profile > 0)[0]
 
     if len(x_nonzero) == 0 or len(y_nonzero) == 0:
-        raise ValueError("SCT failed to detect the spinal cord.")
+        raise ValueError(f"sct_deepseg failed to detect the {task}.")
 
     min_x = max(0, np.min(x_nonzero) - margin_x)
     max_x = min(img_3d.shape[x_axis], np.max(x_nonzero) + margin_x + 1)
@@ -89,7 +65,6 @@ def get_indices(
     min_y = max(0, np.min(y_nonzero) - margin_y)
     max_y = min(img_3d.shape[y_axis], np.max(y_nonzero) + margin_y + 1)
 
-    x_idx = np.arange(min_x, max_x)
-    y_idx = np.arange(min_y, max_y)
+    print(f"  [SCT sc-crop Breakdown] Inference: {t_infer:.2f}s | Total Function: {time.time()-t0:.2f}s")
 
-    return x_idx, y_idx
+    return np.arange(min_x, max_x), np.arange(min_y, max_y)
