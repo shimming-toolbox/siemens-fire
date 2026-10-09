@@ -151,16 +151,24 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
            '--output-file-format-scanner', output_file_format_scanner,
            '-o', b0shimFolder
            ]
+
     logging.info("Running st_b0shim with command: %s", ' '.join(cmd))
-    ret = subprocess.run(cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    check=True)
-    logging.info(ret.stdout)
-    
+    try:
+        ret = subprocess.run(cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        check=True)
+    except subprocess.CalledProcessError as e:
+        logging.error("st_b0shim failed with return code: %d", e.returncode)
+        logging.error("st_b0shim failed with stdout: %s", e.output)
+        return
+
     if ret.returncode != 0:
-        raise RuntimeError(f"st_b0shim failed with return code: {ret.returncode}. stdout: {ret.stdout}, stderr: {ret.stderr}")
+        logging.error(f"st_b0shim failed with return code: {ret.returncode}. stdout: {ret.stdout}, stderr: {ret.stderr}")
+        return
+
+    logging.info(ret.stdout)
 
     if slices_option == 'auto':
         shutil.copyfile(os.path.join(b0shimFolder, "scanner_shim.txt"), os.path.join(dataFolder, "scanner_shim.txt"))
