@@ -220,11 +220,11 @@ ref_nav = ref_nav
 # This is optional - but if you don't apply the tensordot transformation, you need to manually move the channel dimension to the end
 W = np.linalg.cholesky(np.linalg.inv(np.cov(np.reshape(map[0]['noise'][:].squeeze().transpose((1,0,2)),(nc,-1)))))
 
-img = np.tensordot(img, W, axes=((-2,),(0)))
+img = np.tensordot(img, W.conj(), axes=((-2,),(0)))
 print(img.shape)
-ref = np.tensordot(ref, W, axes=((-2,),(0)))
-img_nav = np.tensordot(img_nav, W, axes=((-2,),(0)))
-ref_nav = np.tensordot(ref_nav, W, axes=((-2,),(0)))
+ref = np.tensordot(ref, W.conj(), axes=((-2,),(0)))
+img_nav = np.tensordot(img_nav, W.conj(), axes=((-2,),(0)))
+ref_nav = np.tensordot(ref_nav, W.conj(), axes=((-2,),(0)))
 
 
 
@@ -275,10 +275,11 @@ sct_crop = args.manual_crop
 print("cropping around spinal cord")
 if sct_crop:
     x_idx, y_idx = get_spinal_cord_crop_indices.get_indices(
-    img_3d_full,
-    affine,
-    "test",
-    args.r,
+    img_3d=img_3d_full,
+    affine = affine,
+    id_num = "test",
+    r = args.r,
+    margin_x = args.margin
 )
 
     # Use x_idx for navigator selection
