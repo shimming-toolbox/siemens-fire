@@ -120,6 +120,8 @@ def test_st_b0shim_gre_volume(tmpdir):
 
     fname_shim_file = os.path.join(__TMP_SHARE_SAVEDDATA__, "scanner_shim.txt")
     assert os.path.exists(fname_shim_file)
+    fname_adjvalidate_commands = os.path.join(__TMP_SHARE_SAVEDDATA__, "commands_to_apply_coefs_at_the_scanner.txt")
+    assert os.path.exists(fname_adjvalidate_commands)
 
     with open(fname_shim_file, 'r') as f:
         lines = f.readlines()

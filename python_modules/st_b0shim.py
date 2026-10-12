@@ -177,6 +177,10 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
     else:
         raise ValueError("Unreachable: Invalid shim method: " + slices_option)
 
+    fname_adj_validate_commands = os.path.join(b0shimFolder, "commands_to_apply_coefs_at_the_scanner.txt")
+    if os.path.exists(fname_adj_validate_commands):
+        shutil.copyfile(fname_adj_validate_commands, os.path.join(dataFolder, "commands_to_apply_coefs_at_the_scanner.txt"))
+
     fname_coefs_gradientcs = os.path.join(dataFolder, "coefs_gradientcs.txt")
     if not os.path.exists(fname_coefs_gradientcs):
         return
