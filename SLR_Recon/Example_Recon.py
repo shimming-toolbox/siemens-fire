@@ -126,6 +126,7 @@ parser.add_argument('--niters', type=int, default=100, help='number of iteration
 parser.add_argument('--mode', type=str, default=None, help='reconstruction mode (hard or soft). default is hard.')
 parser.add_argument('--lam', type=float, default=5.7, help='lambda parameter for soft thresholding. default is 5.7.')
 parser.add_argument('--plot_nav', type=bool, default=False, help='reconstruction mode (hard or soft). default is hard.')
+parser.add_argument('--margin', type=int, default=20, help='amount of voxels to be added the the x (RO) direction of cord mask.')
 args = parser.parse_args()
 
 
@@ -279,6 +280,7 @@ if sct_crop:
     affine = affine,
     id_num = "test",
     r = args.r,
+    margin_x = args.margin,
 )
 
     # Use x_idx for navigator selection
