@@ -433,7 +433,6 @@ for slc in slices_to_process:
         if args.mode is not None:
             out = gpuSLR.ADMM(dat, gpuSLR.c_matrix, kernel, lam, niters=niters, init=init, mode=args.mode)
         else:   
-            print("running SLR recon with zeros as initialization...")
             out = gpuSLR.ADMM(dat,              # input data
                             gpuSLR.c_matrix,    # type of structured low-rank matrix. options are `c_matrix`, `s_matrix` or `vcc_matrix`
                             kernel,             # SLR kernel size
