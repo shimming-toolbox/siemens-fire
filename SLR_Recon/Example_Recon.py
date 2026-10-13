@@ -279,7 +279,6 @@ if sct_crop:
     affine = affine,
     id_num = "test",
     r = args.r,
-    margin_x = args.margin
 )
 
     # Use x_idx for navigator selection
