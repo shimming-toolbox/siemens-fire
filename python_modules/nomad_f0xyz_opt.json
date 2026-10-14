@@ -4,7 +4,7 @@
         "channels_to_shim": "fxyz",
         "Comment: Allowed channels_to_shim options": "Any combination of f, x, y, z. For example: fxyz, fx, fyz, etc.",
 
-        "objective": "Sig int + mi",
+        "objective": "Sig int",
         "Comment: Allowed objective options": "+ separated string using any combination of: Sig int, mi, fmap",
         "Comment: Sig int": "Signal intensity term in the objective function. This term maximizes the signal intensity in the masked region.",
         "Comment: mi": "Mutual information term in the objective function. This term maximizes the mutual information between share/saveddata/anat.nii.gz and the shimmed image.",
@@ -20,6 +20,6 @@
         "Comment: f0_bounds": "The allowed range of f0 offsets in Hz. This is used to constrain the shim currents.",
 
         "xyz_bounds": [-0.2, 0.2],
-        "Comment: xyz_bounds": "The allowed range of xyz offsets in mT/m. This is used to constrain the shim currents."
+        "Comment: xyz_bounds": "The allowed range of xyz offsets in mT/m. This is used to constrain the shim currents. x: RO, y: PE, z: SL."
     }
 }

@@ -13,28 +13,109 @@
             "args": [
                 "-H", "0.0.0.0",
                 "-p", "9020",
+                "-l", "/tmp/share/log/server.log",
                 // "-v",
-                // "-s"
+                "-s"
             ],
             "console": "integratedTerminal",
+            "python": "/root/shimming-toolbox/python/bin/python",
+            "env":{
+                "PYTHONPATH": "/root/.local/lib/python3.13/site-packages"
+            },
             "consoleTitle": "Server",
             "justMyCode": true,
         },
 
-        // Run client
+        // Run client Nomad
         {
-            "name": "Run client",
+            "name": "Run client Nomad",
             "type": "debugpy",
             "request": "launch",
             "program": "/opt/code/python-ismrmrd-server/client.py",
             "args": [
-                "/opt/code/python-ismrmrd-server/data/shepplogan_raw.mrd",
+                //"/workspaces/siemens-fire/data/MRD_input_2026-07-16-153509_69.h5",
+                "/workspaces/siemens-fire/data/MRD_input_2026-07-23-175424_71.h5",
+                //"/workspaces/siemens-fire/data/ep2d_bold_shimming_nomad_opt_surr_fz_2025-10-23-163657_98.h5",
                 "-p", "9020",
-                "-c", "invertcontrast",
-                "-o", "/opt/code/python-ismrmrd-server/data/shepplogan_recon.mrd"
+                "-c", "nomad_f0xyz_opt",
+                "-o", "/workspaces/siemens-fire/data/output.mrd"
             ],
             "console": "integratedTerminal",
-            "consoleTitle": "Client",
+            "python": "/root/shimming-toolbox/python/bin/python",
+            "consoleTitle": "Client Nomad",
+            "justMyCode": true,
+        },
+        // Run client st_masking
+        {
+            "name": "Run client st_masking",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/opt/code/python-ismrmrd-server/client.py",
+            "args": [
+                //"/workspaces/siemens-fire/data/ep2d_bold_ST_shim_nomad_1.1x1.1_2025-08-11-150724_98_small.h5",
+                //"/workspaces/siemens-fire/data/T1w.h5",
+                //"/workspaces/siemens-fire/data/ep2d_bold_ST_COR_HF_2025-09-26-183544_3.h5",
+                "/workspaces/siemens-fire/data/localizer_for_segmentation_2025-10-23-155042_92.h5",
+                "-p", "9020",
+                "-c", "st_masking",
+                "-o", "/workspaces/siemens-fire/data/output.mrd"
+            ],
+            "console": "integratedTerminal",
+            "python": "/root/shimming-toolbox/python/bin/python",
+            "consoleTitle": "Client st_masking",
+            "justMyCode": true,
+        },
+        // Run client st_fieldmap
+        {
+            "name": "Run client st_fieldmap",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/opt/code/python-ismrmrd-server/client.py",
+            "args": [
+                "/workspaces/siemens-fire/testing_data/gre_fmap_baseline_tra_rot_2025-10-07-223140_89.h5",
+                "-p", "9020",
+                "-c", "st_fieldmap",
+                "-o", "/workspaces/siemens-fire/data/output.mrd",
+                "-v"
+            ],
+            "console": "integratedTerminal",
+            "python": "/root/shimming-toolbox/python/bin/python",
+            "consoleTitle": "Client st_fieldmap",
+            "justMyCode": true,
+        },
+                // Run client st_b0shim
+        {
+            "name": "Run client st_b0shim",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/opt/code/python-ismrmrd-server/client.py",
+            "args": [
+                "/workspaces/siemens-fire/data/ep2d_bold_ST_shim_nomad_1.1x1.1_2025-08-11-150724_98_small.h5",
+                "-p", "9020",
+                "-c", "st_b0shim",
+                "-o", "/workspaces/siemens-fire/data/output.mrd"
+            ],
+            "console": "integratedTerminal",
+            "python": "/root/shimming-toolbox/python/bin/python",
+            "consoleTitle": "Client st_b0shim",
+            "justMyCode": true,
+        },
+        // Run client max_intensity_shim
+        {
+            "name": "Run client max_intensity_shim",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/opt/code/python-ismrmrd-server/client.py",
+            "args": [
+                //"/workspaces/siemens-fire/data/finst_tests/ep2d_bold_shimming_nomad_opt_surr_z_2025-10-23-163203_13.h5",
+                "/workspaces/siemens-fire/data/ep2d_opt_finst_z_2026-07-23-181407_7.h5",
+                "-p", "9020",
+                "-c", "max_intensity_shim",
+                "-o", "/workspaces/siemens-fire/data/output.mrd"
+            ],
+            "console": "integratedTerminal",
+            "python": "/root/shimming-toolbox/python/bin/python",
+            "consoleTitle": "Client max_intensity_shim",
             "justMyCode": true,
         },
     ],
@@ -42,7 +123,7 @@
     [
         {
             "name": "Server + client",
-            "configurations": ["Start server", "Run client"]
+            "configurations": ["Start server", "Run client Nomad"]
         },
     ]
 

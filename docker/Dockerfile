@@ -9,7 +9,8 @@ ENV TZ=America/Toronto
 # Install system dependencies
 RUN apt-get update && \
     apt-get install -y lsof git make curl sudo xvfb bzip2 gcc g++ python3-pip \
-                    libglib2.0-0 libgl1 libxrender1 libxkbcommon-x11-0 libdbus-1-3 cmake && \
+                    libglib2.0-0 libgl1 libxrender1 libxkbcommon-x11-0 libdbus-1-3 cmake \
+                    libhdf5-dev pkg-config && \
     apt-get clean
 
 # Clone the shimming-toolbox repository and install it
@@ -54,6 +55,10 @@ RUN sct_deepseg spinalcord -install
 # Install specific versions
 RUN pip install numpy==1.26.4 h5py==3.14.0
 
+# Install ismrmrdtools
+Run cd /opt/code/ismrmrd-python-tools && \
+    pip install .
+
 # Clone the mrd2nii repository and install it
 RUN mkdir -p /opt/code/mrd2nii && \
     git clone https://github.com/shimming-toolbox/mrd2nii.git /opt/code/mrd2nii && \
@@ -79,8 +84,8 @@ COPY ./python_modules/st_b0shim.py  /opt/code/python-ismrmrd-server
 COPY ./python_modules/st_b0shim.json  /opt/code/python-ismrmrd-server
 COPY ./python_modules/nomad_f0xyz_opt.py  /opt/code/python-ismrmrd-server
 COPY ./python_modules/nomad_f0xyz_opt.json  /opt/code/python-ismrmrd-server
-COPY ./python_modules/finst_shim.py  /opt/code/python-ismrmrd-server
-COPY ./python_modules/finst_shim.json  /opt/code/python-ismrmrd-server
+COPY ./python_modules/max_intensity_shim.py  /opt/code/python-ismrmrd-server
+COPY ./python_modules/max_intensity_shim.json  /opt/code/python-ismrmrd-server
 
 # Set the st_masking module as the default module
 # CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate shim-dev && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]

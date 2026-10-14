@@ -19,6 +19,9 @@ import nibabel as nib
 import random
 import shutil
 
+from nomad_f0xyz_opt import get_slice_mask_center_of_mass, load_mask, get_isocenter, calculate_f0_from_gradients
+from shimmingtoolbox.cli.b0shim import read_txt_file, write_coefs_to_text_file
+
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
@@ -132,24 +135,40 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
     else:
         raise ValueError("Unreachable: Invalid shim method: " + slices_option)
 
-    ret = subprocess.run(['st_b0shim', 'dynamic',
-                    '--fmap', fname_fmap,
-                    '--target', fname_mag,
-                    '--mask', fname_mask,
-                    '--slices', slices_option,
-                    '--scanner-coil-order', mrdhelper.get_json_config_param(config_dict, 'scanner-coil-order', default='0,1', type='str'),
-                    '--optimizer-method', mrdhelper.get_json_config_param(config_dict, 'optimizer-method', default='pseudo_inverse', type='str'),
-                    '--optimizer-criteria', mrdhelper.get_json_config_param(config_dict, 'optimizer-criteria', default='rmse', type='str'),
-                    '--regularization-factor', str(mrdhelper.get_json_config_param(config_dict, 'regularization-factor', default=0.1, type='float')),
-                    '--weighting-signal-loss', str(mrdhelper.get_json_config_param(config_dict, 'weighting-signal-loss', default=10, type='float')),
-                    '--mask-dilation-kernel-size', str(mrdhelper.get_json_config_param(config_dict, 'mask-dilation-kernel-size', default=5, type='int')),
-                    '--off-channels', mrdhelper.get_json_config_param(config_dict, 'off-channels', default='', type='str'),
-                    '--output-file-format-scanner', output_file_format_scanner,
-                    '-o', b0shimFolder],
-                    check=True)
-    
+    cmd = ['st_b0shim', 'dynamic',
+           '--fmap', fname_fmap,
+           '--target', fname_mag,
+           '--mask', fname_mask,
+           '--slices', slices_option,
+           '--scanner-coil-order', mrdhelper.get_json_config_param(config_dict, 'scanner-coil-order', default='0,1', type='str'),
+           '--optimizer-method', mrdhelper.get_json_config_param(config_dict, 'optimizer-method', default='pseudo_inverse', type='str'),
+           '--optimizer-criteria', mrdhelper.get_json_config_param(config_dict, 'optimizer-criteria', default='rmse', type='str'),
+           '--regularization-factor', str(mrdhelper.get_json_config_param(config_dict, 'regularization-factor', default=0.1, type='float')),
+           '--weighting-signal-loss', str(mrdhelper.get_json_config_param(config_dict, 'weighting-signal-loss', default=10, type='float')),
+           '--mask-dilation-kernel-size', str(mrdhelper.get_json_config_param(config_dict, 'mask-dilation-kernel-size', default=5, type='int')),
+           '--opt-cs', mrdhelper.get_json_config_param(config_dict, 'opt-cs', default='shim-cs', type='str'),
+           '--off-channels', mrdhelper.get_json_config_param(config_dict, 'off-channels', default='', type='str'),
+           '--output-file-format-scanner', output_file_format_scanner,
+           '-o', b0shimFolder
+           ]
+
+    logging.info("Running st_b0shim with command: %s", ' '.join(cmd))
+    try:
+        ret = subprocess.run(cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        check=True)
+    except subprocess.CalledProcessError as e:
+        logging.error("st_b0shim failed with return code: %d", e.returncode)
+        logging.error("st_b0shim failed with stdout: %s", e.output)
+        return
+
     if ret.returncode != 0:
-        raise RuntimeError(f"st_b0shim failed with return code: {ret.returncode}. stdout: {ret.stdout}, stderr: {ret.stderr}")
+        logging.error(f"st_b0shim failed with return code: {ret.returncode}. stdout: {ret.stdout}, stderr: {ret.stderr}")
+        return
+
+    logging.info(ret.stdout)
 
     if slices_option == 'auto':
         shutil.copyfile(os.path.join(b0shimFolder, "scanner_shim.txt"), os.path.join(dataFolder, "scanner_shim.txt"))
@@ -158,7 +177,76 @@ def process_acquisition(imgGroup, connection, config, mrdHeader, dset):
     else:
         raise ValueError("Unreachable: Invalid shim method: " + slices_option)
 
-    return
+    fname_adj_validate_commands = os.path.join(b0shimFolder, "commands_to_apply_coefs_at_the_scanner.txt")
+    if os.path.exists(fname_adj_validate_commands):
+        shutil.copyfile(fname_adj_validate_commands, os.path.join(dataFolder, "commands_to_apply_coefs_at_the_scanner.txt"))
+
+    fname_coefs_gradientcs = os.path.join(dataFolder, "coefs_gradientcs.txt")
+    if not os.path.exists(fname_coefs_gradientcs):
+        return
+    else:
+        # Extra step to convert gradient coef to shim coefs
+        # Requirements:
+        # - gradients must be in mT/m
+        # - Text file must be slice-wise
+        # - Sequence must not have SMS
+        try:
+            logging.info("Converting gradient coefficients to shim coefficients")
+            path_convert_coefs = os.path.join(debugFolder, "convert_coefs")
+            if os.path.exists(path_convert_coefs):
+                shutil.rmtree(path_convert_coefs)
+                logging.debug("Removed existing folder " + path_convert_coefs + " for converting shim coefficients")
+            os.makedirs(path_convert_coefs, exist_ok=False)
+
+            fname_coefs_shimcs_nof0 = os.path.join(path_convert_coefs, "coefs_shimcs.txt")
+            cmd = ['st_b0shim', 'convert-shim-coefs-format',
+                '-i', fname_coefs_gradientcs,
+                '-o', fname_coefs_shimcs_nof0,
+                '--target', fname_mag,
+                '--input-file-format', 'slicewise',
+                '--output-file-format', 'slicewise',
+                '--input-file-cs', 'gradient-cs',
+                '--output-file-cs', 'shim-cs'
+                ]
+            ret = subprocess.run(cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    check=True)
+            logging.info(ret.stdout)
+            if ret.returncode != 0:
+                raise RuntimeError(f"st_b0shim convert-shim-coefs-format failed with return code: {ret.returncode}. stdout: {ret.stdout}, stderr: {ret.stderr}")
+
+            coefs = read_txt_file(fname_coefs_shimcs_nof0, sep='|')
+            fname_json = fname_mag.rsplit('.nii.gz')[0] + '.json'
+            with open(fname_json, 'r') as f:
+                json_data = json.load(f)
+            isocenter = get_isocenter(json_data)
+            nii_mask = nib.load(fname_mask)
+            nii_target = nib.load(fname_mag)
+            if nii_target.ndim == 4:
+                nii_target = nib.Nifti1Image(nii_target.get_fdata()[..., 0], affine=nii_target.affine, header=nii_target.header)
+            nii_mask_res = load_mask(nii_target, nii_mask, path_convert_coefs)
+            n_slices = nii_target.shape[2]
+
+            # Todo: This won't work for SMS acquisitions
+            n_shims = coefs.shape[0]
+            for i_shim in range(n_shims):
+                i_slice = i_shim % n_slices
+                com = get_slice_mask_center_of_mass(nii_mask_res, i_slice)
+                f0 = calculate_f0_from_gradients(coefs[i_shim, 1:], isocenter, com)
+                coefs[i_shim, 0] += f0
+
+            fname_coefs_shimcs_f0 = os.path.join(path_convert_coefs, "coefs_shimcs_f0.txt")
+            write_coefs_to_text_file(coefs, fname_coefs_shimcs_f0, o_format='slicewise', sep='|')
+
+            shutil.copy(fname_coefs_shimcs_nof0, os.path.join(dataFolder, "coefs_shimcs.txt"))
+            shutil.copy(fname_coefs_shimcs_f0, os.path.join(dataFolder, "coefs_shimcs_f0.txt"))
+        except Exception as e:
+            logging.error(traceback.format_exc())
+            connection.send_logging(constants.MRD_LOGGING_ERROR, traceback.format_exc())
+
+        return
 
 
 def extract_nii_slice_ordering_to_chronological(json_data, n_slices):
