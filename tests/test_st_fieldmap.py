@@ -57,7 +57,7 @@ def test_st_fieldmap_use_mask(tmpdir):
     fname_fieldmap = os.path.join(__TMP_SHARE_SAVEDDATA__, "fieldmap.nii.gz")
     assert os.path.exists(fname_fieldmap)
 
-    fname_saved_mask = os.path.join(__TMP_SHARE_DEBUG__, "st_fieldmap", "saved_mask.nii.gz")
+    fname_saved_mask = glob.glob(os.path.join(__TMP_SHARE_DEBUG__, "st_fieldmap*", "saved_mask.nii.gz"))[0]
     assert os.path.exists(fname_saved_mask)
 
     nii_saved_mask = nib.load(fname_saved_mask)
@@ -137,7 +137,7 @@ def test_st_fieldmap_use_mask_dilate(tmpdir):
     fname_fieldmap = os.path.join(__TMP_SHARE_SAVEDDATA__, "fieldmap.nii.gz")
     assert os.path.exists(fname_fieldmap)
 
-    fname_saved_mask = os.path.join(__TMP_SHARE_DEBUG__, "st_fieldmap", "saved_mask.nii.gz")
+    fname_saved_mask = glob.glob(os.path.join(__TMP_SHARE_DEBUG__, "st_fieldmap*", "saved_mask.nii.gz"))[0]
     assert os.path.exists(fname_saved_mask)
 
     nii_saved_mask = nib.load(fname_saved_mask)

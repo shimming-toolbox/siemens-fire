@@ -32,6 +32,10 @@ dataFolder = "/tmp/share/saved_data"
 def process(connection, config, mrdHeader):
     logging.info("Config: \n%s", config)
 
+    global b0shimFolder, mrd2niiFolder
+    b0shimFolder = f"{debugFolder}/st_b0shim" + datetime.now().strftime("_%Y-%m-%d-%H%M%S" + "_" + str(random.randint(0,100)))
+    mrd2niiFolder = f"{b0shimFolder}/mrd2nii"
+
     # mrdHeader should be xml formatted MRD header, but may be a string
     # if it failed conversion earlier
     try:

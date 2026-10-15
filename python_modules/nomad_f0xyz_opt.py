@@ -1,7 +1,9 @@
 import copy
 import ctypes
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
+import random
 import ismrmrd
 from joblib import Parallel, delayed
 import json
@@ -417,6 +419,8 @@ def process(connection, config, metadata):
     
     if use_f0_offset_from_gradients:
         debugFolder += "_f0_offset"
+    debugFolder += datetime.now().strftime("_%Y-%m-%d-%H%M%S" + "_" + str(random.randint(0,100)))
+
     if os.path.exists(debugFolder):
         shutil.rmtree(debugFolder)
     os.makedirs(debugFolder)

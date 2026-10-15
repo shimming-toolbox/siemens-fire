@@ -150,10 +150,14 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
     logging.info(f'process_image called with {len(imgGroup)} images')
     logging.info('-----------------------------------------------')
 
+    method = mrdhelper.get_json_config_param(config_dict, 'method')
+    logging.info(f"Creating mask using method: {method}")
+
     # Create folder, if necessary
-    if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
-        logging.debug("Created folder " + debugFolder + " for debug output files")
+    maskFolder = os.path.join(debugFolder, f"mask_{method}" + datetime.now().strftime("_%Y-%m-%d-%H%M%S" + "_" + str(random.randint(0,100))))
+    if not os.path.exists(maskFolder):
+        os.makedirs(maskFolder)
+        logging.debug("Created folder " + maskFolder + " for debug output files")
 
     logging.debug("Processing data with %d images of type %s", len(imgGroup), ismrmrd.get_dtype_from_data_type(imgGroup[0].data_type))
 
@@ -168,7 +172,7 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
         logging.debug("IceMiniHead[0]: %s", base64.b64decode(meta[0]['IceMiniHead']).decode('utf-8'))
 
     # Copy the MRD file to a new location for conversion
-    mrd2nii_folder = debugFolder + "/mrd2nii_conversion"
+    mrd2nii_folder = maskFolder + "/mrd2nii_conversion"
     if not os.path.exists(mrd2nii_folder):
         os.makedirs(mrd2nii_folder)
 
@@ -179,11 +183,9 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
         nii = nib.Nifti1Image(np.mean(nii.get_fdata(), axis=3), nii.affine, header=nii.header)
     nib.save(nii, fname_input_nii)
 
-    method = mrdhelper.get_json_config_param(config_dict, 'method')
-    logging.info(f"Creating mask using method: {method}")
     # Create the mask with the threshold method
     if method == 'threshold':
-        fname_output_mask_nii = os.path.join(debugFolder, 'mask_threshold.nii.gz')
+        fname_output_mask_nii = os.path.join(maskFolder, 'mask_threshold.nii.gz')
         subprocess.run(['st_mask', 'threshold',
                         '-i', fname_input_nii,
                         '--scaled-thr',
@@ -202,13 +204,13 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
             elif repetition != hrd.repetition:
                 raise RuntimeError(f"{method} method only supports input images with the same repetition number")
 
-        fname_output_mask_nii = os.path.join(debugFolder, 'mask_sct_deepseg.nii.gz')
+        fname_output_mask_nii = os.path.join(maskFolder, 'mask_sct_deepseg.nii.gz')
         if head[0].repetition == 0:
             env = os.environ.copy()
             env["CUDA_VISIBLE_DEVICES"] = "0"
             env["SCT_USE_GPU"] = "1"
             path_sct_binaries = '/opt/code/spinalcordtoolbox/bin'
-            fname_seg_mask_nii = os.path.join(debugFolder, 'mask_sct_deepseg_seg.nii.gz')
+            fname_seg_mask_nii = os.path.join(maskFolder, 'mask_sct_deepseg_seg.nii.gz')
             subprocess.run([os.path.join(path_sct_binaries, 'sct_deepseg'), 'spinalcord',
                             '-i', fname_input_nii,
                             '-o', fname_seg_mask_nii],
@@ -240,13 +242,13 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
             elif repetition != hrd.repetition:
                 raise RuntimeError(f"{method} method only supports input images with the same repetition number")
 
-        fname_output_mask_nii = os.path.join(debugFolder, 'mask_sct_propseg.nii.gz')
+        fname_output_mask_nii = os.path.join(maskFolder, 'mask_sct_propseg.nii.gz')
         if head[0].repetition == 0:
             env = os.environ.copy()
             env["CUDA_VISIBLE_DEVICES"] = "0"
             env["SCT_USE_GPU"] = "1"
             path_sct_binaries = '/opt/code/spinalcordtoolbox/bin'
-            fname_seg_mask_nii = os.path.join(debugFolder, 'mask_sct_propseg_seg.nii.gz')
+            fname_seg_mask_nii = os.path.join(maskFolder, 'mask_sct_propseg_seg.nii.gz')
             cmd = [os.path.join(path_sct_binaries, 'sct_propseg'),
                             '-c', mrdhelper.get_json_config_param(config_dict, 'sct_propseg_contrast'),
                             '-i', fname_input_nii,
@@ -255,7 +257,7 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
             if include_csf:
                 cmd.append('-CSF')
                 basename = os.path.basename(fname_input_nii)
-                fname_seg_csf_nii = os.path.join(debugFolder, f'{basename.replace(".nii.gz", "_CSF_seg.nii.gz")}')
+                fname_seg_csf_nii = os.path.join(maskFolder, f'{basename.replace(".nii.gz", "_CSF_seg.nii.gz")}')
             subprocess.run(cmd,
                            env=env,
                            check=True)
@@ -286,20 +288,20 @@ def process_image(imgGroup, connection, config, mrdHeader, dset):
             elif repetition != hrd.repetition:
                 raise RuntimeError("bet method only supports input images with the same repetition number")
         
-        fname_output_mask_nii = os.path.join(debugFolder, 'mask_bet.nii.gz')
+        fname_output_mask_nii = os.path.join(maskFolder, 'mask_bet.nii.gz')
         if head[0].repetition == 0:
             env = os.environ.copy()
             env["FSLOUTPUTTYPE"] = "NIFTI_GZ"
             subprocess.run(['/root/shimming-toolbox/python/bin/bet2',
                             fname_input_nii,
-                            os.path.join(debugFolder, 'tmp'),
+                            os.path.join(maskFolder, 'tmp'),
                             '-f', mrdhelper.get_json_config_param(config_dict, 'bet_f', default='0.5'),
                             '-g', mrdhelper.get_json_config_param(config_dict, 'bet_g', default='0'),
                             '-m',
                             '-n'],
                             env=env,
                             check=True)
-            os.rename(os.path.join(debugFolder, 'tmp_mask.nii.gz'), fname_output_mask_nii)
+            os.rename(os.path.join(maskFolder, 'tmp_mask.nii.gz'), fname_output_mask_nii)
             output_mask_nii = nib.load(fname_output_mask_nii)
         else:
             # Only process the first repetition
