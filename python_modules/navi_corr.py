@@ -376,7 +376,7 @@ def apply_nav_mask_from_centerline(S, center_x_per_slice, width_x_per_slice, nSl
     """
 
     # FFT to spatial domain: one batched FFT over the samples axis
-    nav_spatial = np.fft.fftshift(np.fft.fft(S, axis=1), axes=1)
+    nav_spatial = np.fft.fftshift(np.fft.fft(np.fft.ifftshift(S, axes=1), axis=1), axes=1)
    
     # Build (samples, sl) mask
     mask = np.zeros((nKx, nSlice),  dtype=np.float32)
