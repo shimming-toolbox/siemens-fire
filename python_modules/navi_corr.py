@@ -632,7 +632,8 @@ def convert_to_ismrmrd_images(images, acq_headers, fov):
         ismrmrd_image = ismrmrd.Image.from_array(img, transpose=False)
         ismrmrd_image.setHead(mrdhelper.update_img_header_from_raw(ismrmrd_image.getHead(), acq))
         ismrmrd_image.field_of_view = fov
-        ismrmrd_image.image_index = i
+        ismrmrd_image.image_index = acq.idx.slice + data.shape[1] * acq.idx.contrast + 1
+        ismrmrd_image.image_series_index = acq.idx.repetition
         tmp_meta = ismrmrd.Meta()
         tmp_meta['DataRole']               = 'Image'
         tmp_meta['ImageProcessingHistory'] = ['FIRE', 'PYTHON']
