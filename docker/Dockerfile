@@ -41,7 +41,8 @@ RUN mkdir -p /opt/code/python-ismrmrd-server && \
 # Clone the spinalcordtoolbox repository and install it
 RUN mkdir -p /opt/code/spinalcordtoolbox && \
     # git clone --branch 7.0 --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinalcordtoolbox && \
-    git clone --branch jn/pytorch-1.13.1 --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinalcordtoolbox && \
+    # git clone --branch jn/pytorch-1.13.1 --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinalcordtoolbox && \
+    git clone --branch master --depth 1 https://github.com/spinalcordtoolbox/spinalcordtoolbox.git /opt/code/spinalcordtoolbox && \
     cd /opt/code/spinalcordtoolbox && \
     ./install_sct -iygc 
 
@@ -50,7 +51,8 @@ ENV PATH=/opt/code/spinalcordtoolbox/bin:$PATH
 
 # Install sct_deepseg spinalcord model
 RUN sct_deepseg spinalcord -install
-RUN sct_deepseg sc_canal_t2 -install
+# RUN sct_deepseg sc_canal_t2 -install
+RUN sct_deepseg canal -install
 
 # Install bet2
 RUN conda install -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge fsl-bet2

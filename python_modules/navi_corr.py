@@ -247,7 +247,7 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
 
     result = subprocess.run(
         [   "sct_deepseg",
-            "sc_canal_t2",
+            "canal",
             "-i", str(ref_path.resolve()),
             "-o", str(seg_path.resolve()),
         ],
