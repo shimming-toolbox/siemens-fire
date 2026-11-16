@@ -61,6 +61,43 @@ class SiemensRAW:
     def reset_acq(self) -> None:
         self.acquisitions = []
 
+    def estimate_nav_te(self) -> float:
+        """Estimate the navigator TE from acquisition_time_stamp, averaged over all lines."""
+        TE = np.asarray(self.echo_times, dtype=float)
+        detector = NavigatorDetector(self.n_echo)     #  counters start at zero
+        t0 = {}                                       # first echo timestamp
+        d = {c: [] for c in range(1, self.n_echo)}
+        d["nav"] = []
+
+        for acq in self.acquisitions:
+            if acq.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
+                continue
+            key = (acq.idx.slice, acq.idx.repetition)
+            ts = acq.acquisition_time_stamp
+            if detector.is_nav(acq):
+                if key in t0:
+                    d["nav"].append(ts - t0[key])
+            elif acq.idx.contrast == 0:
+                t0[key] = ts
+            elif key in t0:
+                d[acq.idx.contrast].append(ts - t0[key])
+
+        if not d["nav"]:
+            es = TE[-1] - TE[-2]  # Inter-echo spacing
+            fallback_ms = TE[-1] + es  
+            print(f"ERROR: No navigator detected. Setting navigator TE to {fallback_ms:.3f} ms (fallback value).", flush=True)
+            return fallback_ms
+        
+        # Calibrate the timestamp tick using known echo times (linear regression: TE = TE0 + tick_ms * Δticks)
+        dt_ticks = np.array([np.mean(d[c]) for c in range(1, self.n_echo)])
+        dTE = TE[1:] - TE[0]
+        tick_fit = np.sum(dTE * dt_ticks) / np.sum(dt_ticks**2)
+        print(f"Calibrated timestamp tick : {tick_fit:.4f} ms", flush=True)
+
+        te_nav = TE[0] + tick_fit * np.mean(d["nav"])
+        print(f"Estimated navigator TE : {te_nav:.3f} ms (n={len(d['nav'])})", flush=True)
+        return te_nav
+
     def extract_noise(self) -> None:
         # Assume noise is first acquisition
         if self.acquisitions[0].is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):

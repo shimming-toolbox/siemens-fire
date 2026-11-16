@@ -420,9 +420,9 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     rep_index = raw.acquisitions[0].idx.repetition
     dt = raw.acquisitions[0].sample_time_us * 1e-6
 
-    # Navigator echo time is not inside the header. It should be under user_int 
-    # from acquisition metadata but is not present when using FIRE
-    navigator_te = 24e-3   
+    # Navigator echo time is not inside the header. It should be under user_int inside the ISMRMRD acquisition header but is not present when using FIRE
+    # Estimate it from acquisition_time_stamp, averaged over all lines
+    navigator_te = raw.estimate_nav_te() * 1e-3
 
     # Preprocessing acquisitions
     # First repetition will contain a noise acq. Extract it and keep it for all reps.
