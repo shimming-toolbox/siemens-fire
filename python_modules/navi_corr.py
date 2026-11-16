@@ -417,7 +417,6 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     FOV_z = acq_metadata.FOV_z
 
     # Metadata from acquisitions
-    rep_index = raw.acquisitions[0].idx.repetition
     dt = raw.acquisitions[0].sample_time_us * 1e-6
 
     # Navigator echo time is not inside the header. It should be under user_int inside the ISMRMRD acquisition header but is not present when using FIRE
@@ -448,11 +447,6 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
         images = np.zeros(img_dims)
 
     kspace, navigator, acs_mask = raw.build_kspace(kspace=kspace, navigator=navigator)
-    # Acquisitions are needed later on, so don't reset them actually
-    #raw.reset_acq()
-
-    #kspace = kspace[[rep_index], ...]           # (1, 1, 1, 1, nEcho=4, nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
-    #navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
 
     # --------------------------------------------------
     # Build reference volume and save it under NifTi
@@ -537,8 +531,6 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
 
             corrected[:, p_start:p_end, l_start:l_end, :, :] = kspace_correction(kspace_block, field_estimates_block, nKx, echo_times, dt)
 
-    #corrected[:] = kspace_correction(kspace, field_estimates, nKx, echo_times, dt) # (1, 4, 1, 384, 768, 24)
-
     # Use GRAPPA to fill in missing kspace lines
     print("GRAPPA correction...")
 
@@ -567,7 +559,6 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
 
                 raw_block = corrected[echo_start:echo_end, slice_start:slice_end, :, :, coil_start:coil_end]
                 corrected[echo_start:echo_end, slice_start:slice_end, :, :, coil_start:coil_end] = raw_to_image(raw_block, nKx, nKx_recon)
-    #img = raw_to_image(corrected, nKx, nKx_recon)
 
     # Walsh coil combination
     print("  Using Inati coil combination with prewhitening...")
@@ -580,17 +571,9 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
 
             images[e_start:e_end, s_start:s_end, :, :] = coil_combination_Inati(data_chunk, noise_data=None)
 
-    #corrected[:] = coil_combination_Inati(corrected, noise_data=None)
-
     # Remove readout oversampling by cropping
     # new memmap needed here?
     images = remove_oversampling(images, nKx, nKx_recon, 3)
-
-    # USELESS?
-    #img = mag_images(img)
-
-    # Save images for faster testing
-    # np.save("images.npy", images)
 
     if denoise_images:
         print("Denoising...")
