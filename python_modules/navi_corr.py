@@ -113,7 +113,7 @@ def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, 
     print(f"  kspace_restored.shape : {kspace_grappa.shape}")
 
     data = np.flip(kspace_grappa, 4) # x axis inversion
-    data = reconstruct_image(data)
+    data = reconstruct_image(data, axes=(3, 4))
 
     # Coil combination (RMS, coils_axis=-1)
     data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
@@ -203,7 +203,7 @@ def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, 
 
 def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
     """
-    Segment the spinal cord with SCT deepseg on the cropped reference volume
+     Segment the spinal canal with SCT deepseg on the cropped reference volume
     (ref_echo0.nii.gz) and extract the width of the spinal canal the
     segmentation.
 
@@ -247,7 +247,7 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
 
     result = subprocess.run(
         [   "sct_deepseg",
-            "sc_canal_t2",
+            "canal",
             "-i", str(ref_path.resolve()),
             "-o", str(seg_path.resolve()),
         ],
@@ -279,7 +279,7 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
 
     for z in range(nSlice):
 
-        # Binary spinal cord mask for current slice
+        # Binary spinal canal mask for current slice
         mask = seg_mask[:, :, z] > 0
 
         if not np.any(mask):
@@ -288,7 +288,7 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
 
         x_coords, y_coords = np.where(mask)
 
-        # Bounding box of the segmented spinal cord along x
+        # Bounding box of the segmented spinal canal along x
         x_min = np.min(x_coords)
         x_max = np.max(x_coords)
 
@@ -357,13 +357,13 @@ def apply_nav_mask_from_centerline(S, center_x_per_slice, width_x_per_slice, nSl
     Apply spatial masks to all navigator lines around the spinal cord.
     Navigators are FFT'd to spatial domain, masked per slice, and returned masked.
 
-    The mask center and width are determined independently for each slice
+     The mask center and width are determined independently for each slice
     from the spinal canal segmentation.
 
     Parameters
     ----------
     S (np.ndarray): Navigator k-space data with shape (shape: (rep, samples, ky, sl, coil)).
-
+    
     center_x_per_slice (dict): the spinal cord center in image coordinates.
 
     width_x_per_slice (dict): the maximal spinal canal width along x in image coordinates.
@@ -376,16 +376,16 @@ def apply_nav_mask_from_centerline(S, center_x_per_slice, width_x_per_slice, nSl
     """
 
     # FFT to spatial domain: one batched FFT over the samples axis
-    nav_spatial = np.fft.fftshift(np.fft.fft(S, axis=1), axes=1)
+    nav_spatial = np.fft.fftshift(np.fft.fft(np.fft.ifftshift(S, axes=1), axis=1), axes=1)
    
     # Build (samples, sl) mask
-    mask = np.zeros((nKx, nSlice), dtype=np.float32)
+    mask = np.zeros((nKx, nSlice),  dtype=np.float32)
 
     for sl, x_img in center_x_per_slice.items():
         # Scale the center (image coords) to navigator spatial coordinates
         x_center = int(x_img / nKx_recon * nKx)
 
-      # Width from segmentation, converted to navigator coordinates
+        # Width from segmentation, converted to navigator coordinates
         width_img = width_x_per_slice[sl]
         width_nav = width_img / nKx_recon * nKx
 
@@ -417,12 +417,11 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     FOV_z = acq_metadata.FOV_z
 
     # Metadata from acquisitions
-    rep_index = raw.acquisitions[0].idx.repetition
     dt = raw.acquisitions[0].sample_time_us * 1e-6
 
-    # Navigator echo time is not inside the header. It should be under user_int 
-    # from acquisition metadata but is not present when using FIRE
-    navigator_te = 24e-3   
+    # Navigator echo time is not inside the header. It should be under user_int inside the ISMRMRD acquisition header but is not present when using FIRE
+    # Estimate it from acquisition_time_stamp, averaged over all lines
+    navigator_te = raw.estimate_nav_te() * 1e-3
 
     # Preprocessing acquisitions
     # First repetition will contain a noise acq. Extract it and keep it for all reps.
@@ -448,11 +447,6 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
         images = np.zeros(img_dims)
 
     kspace, navigator, acs_mask = raw.build_kspace(kspace=kspace, navigator=navigator)
-    # Acquisitions are needed later on, so don't reset them actually
-    #raw.reset_acq()
-
-    #kspace = kspace[[rep_index], ...]           # (1, 1, 1, 1, nEcho=4, nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
-    #navigator = navigator[[rep_index], ...]     # (1, 1, 1, 1, 1,       nSlice=15, 1, nKy=384, nKx=768, nCoils=4)
 
     # --------------------------------------------------
     # Build reference volume and save it under NifTi
@@ -497,20 +491,8 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     # Axis order is derived from KSPACE_LAYOUT (source used
     # by _get_kspace_dims), so a reordering there propagates here automatically.
 
-    #axis_names = list(KSPACE_LAYOUT) + ["kx", "coil"]
-
-    # axes kept in S: rep, slice, ky, kx, coil: all others must be singleton
-    #KEEP = {"slice", "kspace_encoding_step_1", "kx", "coil"}
-
-    # drop singleton axes
-    #squeeze_axes = tuple(i for i, n in enumerate(axis_names) if n not in KEEP)
-    #navigator = navigator.squeeze(axis=squeeze_axes)
-
-    # reorder to (rep, kx, ky, slice, coil)
-    #remaining = [n for n in axis_names if n in KEEP]          # order after squeeze
-    #target    = ["kx", "kspace_encoding_step_1", "slice", "coil"]
-    #navigator = np.transpose(navigator, [remaining.index(n) for n in target])
-
+    navigator = np.moveaxis(np.moveaxis(navigator, 3, 1), 2, 3)
+    print("navigator.shape:", navigator.shape)
     # --------------------------------------------------
     # CENTERLINE MASKING on navigator lines
     # S[rep, samples, ky, sl, coil] — samples axis = nav readout
@@ -519,14 +501,14 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     # --------------------------------------------------
     if use_mask:
         print("Applying centerline mask to navigator...")
-        navigator = apply_nav_mask_from_centerline(navigator, center_x_per_slice, nSlice, nKx, nKx_recon, width=35)
+        navigator_masked = apply_nav_mask_from_centerline(navigator, center_x_per_slice, width_x_per_slice, nSlice, nKx, nKx_recon)
         print("Centerline masking applied.")
 
     # --------------------------------------------------
     # PHASE EXTRACTION — unchanged from original
     # --------------------------------------------------
     print("Computing corrections...")
-    field_estimates = get_field_estimates(navigator, raw.noise.data.T, navigator_te) # rad/s
+    field_estimates = get_field_estimates(navigator, navigator_masked, raw.noise.data.T, nSlice, navigator_te) # rad/s
 
     def get_acquired_lines(S, rep=0):
         energy = np.abs(S[rep]).sum(axis=(0, 3))       # (nKy, nSlice)
@@ -568,8 +550,6 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
 
             corrected[:, p_start:p_end, l_start:l_end, :, :] = kspace_correction(kspace_block, field_estimates_block, nKx, echo_times, dt)
 
-    #corrected[:] = kspace_correction(kspace, field_estimates, nKx, echo_times, dt) # (1, 4, 1, 384, 768, 24)
-
     # Use GRAPPA to fill in missing kspace lines
     print("GRAPPA correction...")
 
@@ -598,30 +578,21 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
 
                 raw_block = corrected[echo_start:echo_end, slice_start:slice_end, :, :, coil_start:coil_end]
                 corrected[echo_start:echo_end, slice_start:slice_end, :, :, coil_start:coil_end] = raw_to_image(raw_block, nKx, nKx_recon)
-    #img = raw_to_image(corrected, nKx, nKx_recon)
 
     # Walsh coil combination
     print("  Using Inati coil combination with prewhitening...")
 
     for e_start in range(0, n_echo, echo_step):
         e_end = min(e_start + echo_step, n_echo)
-        for s_start in range(0, n_slice, n_slice):
+        for s_start in range(0, n_slice, slice_step):
             s_end = min(s_start + slice_step, n_slice)
             data_chunk = corrected[e_start:e_end, s_start:s_end, ...]
 
             images[e_start:e_end, s_start:s_end, :, :] = coil_combination_Inati(data_chunk, noise_data=None)
 
-    #corrected[:] = coil_combination_Inati(corrected, noise_data=None)
-
     # Remove readout oversampling by cropping
     # new memmap needed here?
     images = remove_oversampling(images, nKx, nKx_recon, 3)
-
-    # USELESS?
-    #img = mag_images(img)
-
-    # Save images for faster testing
-    # np.save("images.npy", images)
 
     if denoise_images:
         print("Denoising...")
@@ -663,7 +634,8 @@ def convert_to_ismrmrd_images(images, acq_headers, fov):
         ismrmrd_image = ismrmrd.Image.from_array(img, transpose=False)
         ismrmrd_image.setHead(mrdhelper.update_img_header_from_raw(ismrmrd_image.getHead(), acq))
         ismrmrd_image.field_of_view = fov
-        ismrmrd_image.image_index = i
+        ismrmrd_image.image_index = acq.idx.slice + data.shape[1] * acq.idx.contrast + 1
+        ismrmrd_image.image_series_index = acq.idx.repetition
         tmp_meta = ismrmrd.Meta()
         tmp_meta['DataRole']               = 'Image'
         tmp_meta['ImageProcessingHistory'] = ['FIRE', 'PYTHON']
@@ -755,7 +727,7 @@ def phase_extraction(navigator, noise):
     noise     -- shape : (j, c)       -> (samples, coils)
     """
 
-    phase_correction = navigator.squeeze().transpose(2, 1, 0, 3)
+    navigator = navigator.squeeze()
 
     # Normalize each navigator to unit magnitude
     nav_unit = navigator / (np.abs(navigator) + 1e-8)
@@ -764,8 +736,7 @@ def phase_extraction(navigator, noise):
     # Mean reference phase
     phi_ref = np.angle(nav_ref)
     # Remove static phase
-    delta_S = (navigator * np.exp(-1j * phi_ref)).astype(np.complex64) # (samples=768, lines=384, slices=15, coils=(4,8,...))
-    print("delta_S.shape=", delta_S.shape)
+    phase_correction = (navigator * np.exp(-1j * phi_ref)).astype(np.complex64) # (samples=768, lines=384, slices=15, coils=(4,8,...))
 
     w = np.abs(phase_correction) / np.std(noise, axis=0)   # (768, 384, 15, coils=(4,8,...))  (TODO: check if should need to raise to power 2)
     # RuntimeWarning here because of dividing by zero
@@ -787,11 +758,28 @@ def phase_extraction(navigator, noise):
 def field_conversion(nav_phases, te_nav):
     return nav_phases/te_nav    # rad/s
 
-def get_field_estimates(navigator, noise, te_nav):
-    return field_conversion(
-                phase_extraction(navigator, noise),
-                te_nav
-    )
+def get_field_estimates(navigator, navigator_masked, noise, nSlice, te_nav):
+    phase_extractions= phase_extraction(navigator_masked, noise)
+
+    def get_acquired_lines(navigator, rep=0):
+        energy = np.abs(navigator[rep]).sum(axis=(0, 3))       # (nKy, nSlice)
+        return np.where(energy.sum(axis=1) > 0)[0]
+
+    rep = 0
+    acquired = get_acquired_lines(navigator, rep)
+
+    phase_extractions = unwrap_field_with_median_reference(phase_extractions, acquired, nSlice)
+
+    # Compute and apply noise pre-whitening transform on navigator for binning
+    Psi = np.cov(noise.T)
+    L = np.linalg.cholesky(Psi)
+    W = np.linalg.inv(L).conj().T
+    nav = np.tensordot(navigator[rep], W, axes=((-1,), (0,)))
+
+    refined = refine_unwrap_with_navigator_bins(phase_extractions, nav, acquired, nSlice, n_bins=8,)
+    phase_extractions = refined 
+
+    return field_conversion(phase_extractions, te_nav) # rad/s
 
 def kspace_correction(raw_data, field_estimates, n_samples, echo_times, dt, out=None):
     t = np.array([(j - n_samples/2)*dt for j in range(n_samples)], dtype=np.float32) # (768,) (samples,)
@@ -881,7 +869,7 @@ def unwrap_field_with_median_reference(field_estimates, acquired, nSlice, rep=0,
     """
 
     TWO_PI = 2 * np.pi
-    P = field_estimates[rep][acquired, :].copy()       # (ky, nSlice) -> keep only the acquired ky line
+    P = field_estimates[acquired, :].copy()  # (ky, nSlice) -> keep only the acquired ky line
     n = acquired.size
 
     rng = np.random.default_rng(0)          # deterministic across runs
@@ -922,7 +910,7 @@ def unwrap_field_with_median_reference(field_estimates, acquired, nSlice, rep=0,
             unwrapped = tgt - k_tmp * TWO_PI
             P[:, sl] = unwrapped
 
-    field_estimates[rep][acquired, :] = P     
+    field_estimates[acquired, :] = P     
     return field_estimates
 
 def _constrain_sign_changes(raw_signs, nSlice):
