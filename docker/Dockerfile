@@ -50,6 +50,7 @@ ENV PATH=/opt/code/spinalcordtoolbox/bin:$PATH
 
 # Install sct_deepseg spinalcord model
 RUN sct_deepseg spinalcord -install
+RUN sct_deepseg sc_canal_t2 -install
 
 # Install bet2
 RUN conda install -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge fsl-bet2
@@ -76,6 +77,9 @@ COPY ./scripts ./opt/code/siemens-fire/
 # Add dev user (for development purposes only)
 RUN groupadd -g 1000 dev && \
     useradd -m -u 1000 -g 1000 -s /bin/bash dev
+
+# Ugly hack to allow access to shimming-toolbox to the dev user
+RUN chmod -R 755 /root
 
 # Set the st_masking module as the default module
 #CMD ["/bin/bash", "-c", "source /root/shimming-toolbox/python/etc/profile.d/conda.sh && conda activate base && python /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/python-ismrmrd-server.log -d=st_masking -s"]

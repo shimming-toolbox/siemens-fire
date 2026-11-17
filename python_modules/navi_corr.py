@@ -204,8 +204,8 @@ def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, 
 def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
     """
     Segment the spinal cord with SCT deepseg on the cropped reference volume
-    (ref_echo0.nii.gz) and extract the center of mass of the
-    segmentation as the spinal cord center.
+    (ref_echo0.nii.gz) and extract the width of the spinal canal the
+    segmentation.
 
     Parameters
     ----------
@@ -241,13 +241,13 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
         print(f"ERROR : reference volume not found : {ref_path}")
         return None
 
-    print(f"Running sct_deepseg spinalcord ...")
+    print(f"Running sct_deepseg sc_canal_t2 ...")
     print(f"  Input  : {ref_path}")
     print(f"  Output : {seg_path}")
 
     result = subprocess.run(
         [   "sct_deepseg",
-            "spinalcord",
+            "sc_canal_t2",
             "-i", str(ref_path.resolve()),
             "-o", str(seg_path.resolve()),
         ],
@@ -273,8 +273,8 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
         print("ERROR : segmentation and reference volume shapes differ.")
         return None
 
-    # Extract centerline from segmentation
-    print("\n=== Extracting spinal cord centerline ===")
+    # Extract spinal canal width from segmentation
+    print("\n=== Extracting spinal canal width ===")
     centerline = []
 
     for z in range(nSlice):
@@ -283,21 +283,27 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
         mask = seg_mask[:, :, z] > 0
 
         if not np.any(mask):
-            print(f"  WARNING : no spinal cord detected at slice z={z}")
+            print(f"  WARNING : no spinal canal detected at slice z={z}")
             continue
 
         x_coords, y_coords = np.where(mask)
 
-        # Center of mass of the segmented spinal cord
-        x_center = np.mean(x_coords)
+        # Bounding box of the segmented spinal cord along x
+        x_min = np.min(x_coords)
+        x_max = np.max(x_coords)
+
+        # Center and maximal width along x
+        x_center = (x_min + x_max) / 2
+        x_width = x_max - x_min
+
+        # Keep y center for the centerline CSV
         y_center = np.mean(y_coords)
 
-        centerline.append((x_center, y_center, z))
-
-        print(f" z={z:2d} → center_crop=({x_center:.1f}, {y_center:.1f})")
+        centerline.append((x_center, y_center, x_width, z))
+        print(f" z={z:2d} → center_x={x_center:.1f}, width_x={x_width:.1f}")
 
     if len(centerline) == 0:
-        print("ERROR : no spinal cord detected in segmentation.")
+        print("ERROR : no spinal canal detected in segmentation.")
         return None
     
     # Crop coordinates
@@ -314,12 +320,10 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
     # CSV 1 — cropped image space
     # --------------------------------------------------
     with open(csv_path_crop, "w") as f:
-        f.write("x_crop,y_crop,z_anat\n")
+        f.write("x_crop,y_crop,width_x,z_anat\n")
 
-        for x_crop, y_crop, z in centerline:
-            f.write(
-                f"{x_crop:.4f},{y_crop:.4f},{z}\n"
-            )
+        for x_crop, y_crop, width_x, z in centerline:
+            f.write(f"{x_crop:.4f},{y_crop:.4f},{width_x:.4f},{z}\n")
 
     print(f"\nCenterline in cropped image space saved :{csv_path_crop}")
 
@@ -328,49 +332,69 @@ def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
     # --------------------------------------------------
     with open(csv_path, "w") as f:
 
-        for x_crop, y_crop, z in centerline:
+        for x_crop, y_crop, width_x, z in centerline:
 
             # No flip is applied here because ref_echo0.nii.gz
             # was not flipped before being given to SCT.
             x_img = x_crop + x_lo_crop
             y_img = y_crop + y_lo_crop
 
-            f.write(
-                f"{x_img:.4f},{y_img:.4f},{z}\n"
-            )
+            f.write(f"{x_img:.4f},{y_img:.4f},{width_x:.4f},{z}\n")
 
             print(
                 f"  z={z:2d} → "
                 f"crop({x_crop:.1f},{y_crop:.1f}) → "
                 f"img({x_img:.1f},{y_img:.1f})"
+                f"width_x={width_x:.1f}"
             )
 
     print(f"\nCenterline in full image space saved : {csv_path}")
 
     return csv_path
 
-def apply_nav_mask_from_centerline(S, center_x_per_slice, nSlice, nKx, nKx_recon, width=35):
+def apply_nav_mask_from_centerline(S, center_x_per_slice, width_x_per_slice, nSlice, nKx, nKx_recon):
     """
-    Apply spatial masks to all navigator lines around the spinal cord centerline.
+    Apply spatial masks to all navigator lines around the spinal cord.
     Navigators are FFT'd to spatial domain, masked per slice, and returned masked.
 
-    S (rep, samples, ky, sl, coil): complex — navigator kspace lines
-    center_x_per_slice {sl: x_img}:  centerline x in image coords (0 to nKx_recon)
-    nKx_recon (int): image size along x (after oversampling removal)
-    width (int): half-width of mask in navigator spatial domain
+    The mask center and width are determined independently for each slice
+    from the spinal canal segmentation.
+
+    Parameters
+    ----------
+    S (np.ndarray): Navigator k-space data with shape (shape: (rep, samples, ky, sl, coil)).
+
+    center_x_per_slice (dict): the spinal cord center in image coordinates.
+
+    width_x_per_slice (dict): the maximal spinal canal width along x in image coordinates.
+
+    nSlice (int): Number of slices.
+
+    nKx (int): Navigator readout size.
+
+    nKx_recon (int): Reconstructed image size along x.
     """
 
     # FFT to spatial domain: one batched FFT over the samples axis
     nav_spatial = np.fft.fftshift(np.fft.fft(S, axis=1), axes=1)
    
     # Build (samples, sl) mask
-    mask = np.zeros((nKx, nSlice))
+    mask = np.zeros((nKx, nSlice), dtype=np.float32)
+
     for sl, x_img in center_x_per_slice.items():
-        # Scale x_img (image coords) to navigator spatial domain
+        # Scale the center (image coords) to navigator spatial coordinates
         x_center = int(x_img / nKx_recon * nKx)
+
+      # Width from segmentation, converted to navigator coordinates
+        width_img = width_x_per_slice[sl]
+        width_nav = width_img / nKx_recon * nKx
+
+        # Half-width around center
+        half_width = int(np.ceil(width_nav / 2)) +1
+
         # Rectangular mask
-        lo = max(0, x_center - width)
-        hi = min(nKx, x_center + width)
+        lo = max(0, x_center - half_width)
+        hi = min(nKx, x_center + half_width)
         mask[lo:hi, sl] = 1
 
     # Broadcast (samples, sl) → (rep, samples, ky, sl, coil)
@@ -449,14 +473,18 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
         print(f"Centerline detection failed — continuing without masking")
 
     # --------------------------------------------------
-    # LOAD CENTERLINE CSV
+    # LOAD CENTERLINE CSV -- WIDHT MASK
     # --------------------------------------------------
     center_x_per_slice = {}
+    width_x_per_slice = {}
 
     if csv_path is not None:
-        df_cl = pd.read_csv(csv_path, header=None, names=["x", "y", "z"])
+        df_cl = pd.read_csv(csv_path, header=None, names=["x", "y", "width_x", "z"])
         center_x_per_slice = {int(row["z"]): float(row["x"]) for _, row in df_cl.iterrows()}
+        width_x_per_slice = {int(row["z"]): float(row["width_x"]) for _, row in df_cl.iterrows()}
+
         print(f"Centerline loaded : {len(center_x_per_slice)} slices")
+        print(f"Width loaded      : {len(width_x_per_slice)} slices")
         use_mask = True
     else:
         print("No centerline — using full navigator line")
@@ -499,6 +527,25 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     # --------------------------------------------------
     print("Computing corrections...")
     field_estimates = get_field_estimates(navigator, raw.noise.data.T, navigator_te) # rad/s
+
+    def get_acquired_lines(S, rep=0):
+        energy = np.abs(S[rep]).sum(axis=(0, 3))       # (nKy, nSlice)
+        return np.where(energy.sum(axis=1) > 0)[0]
+
+    rep = 0
+    acquired = get_acquired_lines(S, rep)
+
+    phase_extractions = unwrap_field_with_median_reference(phase_extractions, acquired, nSlice)
+
+    # Compute and apply noise pre-whitening transform on navigator for binning
+    Psi = np.cov(raw.noise.data)
+    L = np.linalg.cholesky(Psi)
+    W = np.linalg.inv(L).conj().T
+    nav = np.tensordot(S[rep], W, axes=((-1,), (0,)))
+
+    refined = refine_unwrap_with_navigator_bins( phase_extractions[rep], nav,
+                                                acquired, nSlice, n_bins=8,)
+    phase_extractions[rep] = refined 
 
     # Apply navigator correction
     print("K-Space correction...")
@@ -709,8 +756,16 @@ def phase_extraction(navigator, noise):
     """
 
     phase_correction = navigator.squeeze().transpose(2, 1, 0, 3)
-    # subtract first navigator phase to remove static phase contributions
-    phase_correction = (phase_correction * np.exp(-1j*np.angle(phase_correction[:, [0], :, :]))).astype(np.complex64)  # (samples=768, lines=384, slices=15, coils=(4,8,...))
+
+    # Normalize each navigator to unit magnitude
+    nav_unit = navigator / (np.abs(navigator) + 1e-8)
+    # Circular mean of navigator phases over lines
+    nav_ref = np.mean(nav_unit, axis=1, keepdims=True)
+    # Mean reference phase
+    phi_ref = np.angle(nav_ref)
+    # Remove static phase
+    delta_S = (navigator * np.exp(-1j * phi_ref)).astype(np.complex64) # (samples=768, lines=384, slices=15, coils=(4,8,...))
+    print("delta_S.shape=", delta_S.shape)
 
     w = np.abs(phase_correction) / np.std(noise, axis=0)   # (768, 384, 15, coils=(4,8,...))  (TODO: check if should need to raise to power 2)
     # RuntimeWarning here because of dividing by zero
@@ -814,3 +869,296 @@ def denoise_mppca(images, patch_radius=2):
     denoised    = denoised_4d.reshape(nEcho, nRep, nSlice, nKy, nKx)
 
     return denoised
+
+def unwrap_field_with_median_reference(field_estimates, acquired, nSlice, rep=0,
+                                       n_iter=3, n_ransac=250, n_refine=2):
+    """
+    Temporal unwrapping using a surrogate respiratory trace (median across slices).
+
+    For each slice, a linear relation tgt ~ a*ref + b is estimated with a
+    RANSAC seed, refined on the unwrapped values, and each shot is shifted by the multiple
+    of 2*pi that brings it closest to the prediction.
+    """
+
+    TWO_PI = 2 * np.pi
+    P = field_estimates[rep][acquired, :].copy()       # (ky, nSlice) -> keep only the acquired ky line
+    n = acquired.size
+
+    rng = np.random.default_rng(0)          # deterministic across runs
+    slice_signs = sign_align_reference(P, nSlice)   # response sign per slice (fixed)
+
+    for _ in range(n_iter):
+        ref = np.median(slice_signs[None, :] * P, axis=1)  # P.shape=(ky, nSlice) with only the acquired ky line => dimension added to slice_signs to allow broadcasting
+
+        for sl in range(nSlice):
+            tgt = P[:, sl]  # keep the field estimate for the slice sl
+
+            # RANSAC seed: Inliers are counted modulo 2*pi so a wrapped point still fits its
+            # own branch and a correct line gathers nearly every shot while a wrong one gathers few.
+            best_inliers, best_fit = -1, None
+            for _ in range(n_ransac):
+                idx = rng.choice(n, size=8, replace=False)
+                a0, b0 = np.polyfit(ref[idx], tgt[idx], 1)  # Linear regression
+
+                res  = tgt - (a0 * ref + b0)
+                res -= TWO_PI * np.round(res / TWO_PI)  # Residual modulo 2π
+
+                # Inlier if its residual is within π/2 of the model
+                n_inliers = int((np.abs(res) < 0.5 * np.pi).sum())
+                if n_inliers > best_inliers:
+                    best_inliers, best_fit = n_inliers, (a0, b0)
+
+            # refine on the unwrapped values
+            a, b = best_fit
+            for _ in range(n_refine):
+                k_tmp = np.round((tgt - (a * ref + b)) / TWO_PI)   # Number of 2π shifts needed to bring tgt close to the model
+                keep  = np.abs(tgt - k_tmp * TWO_PI - (a * ref + b)) < np.pi  # keep.dtype=bool
+
+                a, b = np.polyfit(ref[keep], tgt[keep] - k_tmp[keep] * TWO_PI, 1)
+
+            # Final branch assignment from the refined linear model
+            k_tmp     = np.round((tgt - (a * ref + b)) / TWO_PI)
+            # Final unwrapping using the refined fit
+            unwrapped = tgt - k_tmp * TWO_PI
+            P[:, sl] = unwrapped
+
+    field_estimates[rep][acquired, :] = P     
+    return field_estimates
+
+def _constrain_sign_changes(raw_signs, nSlice):
+    """
+    Snap a per-slice sign vector to a step function with at most 1
+    sign changes across slice order. Physics prior: the field
+    response to inspiration flips sign at most once across the spinal-cord FOV
+    (above vs below the lungs).
+    """
+
+    best = None 
+    for k in range(nSlice + 1): 
+        for first in (1.0, -1.0):
+            cand = np.where(np.arange(nSlice) < k, first, -first)
+            agree = int((cand == raw_signs).sum())
+            if best is None or agree > best[0]:
+                best = (agree, cand)
+    return best[1]
+
+def sign_align_reference(P, nSlice):
+    """
+    Build a respiratory reference robust to sign changes in the field response
+    across slices.
+
+    A plain median across slices can cancel when some slices respond positively
+    and others negatively to respiration. Here, each slice's response sign is
+    estimated from the dominant eigenvector of the inter-slice correlation matrix,
+    constrained to at most one sign change, and the median is computed from th
+    sign-aligned slices.
+    
+    Parameters
+    ----------
+    P (nShots, nSlice): wrapped field estimates, radians.
+
+    Returns
+    -------
+    signs (nSlice,): +/-1 per slice (global orientation fixed to majority +1).
+    """
+    C = np.nan_to_num(np.corrcoef(P.T), nan=0.0)  # Correlation matrix between each slice
+    _, V = np.linalg.eigh(C)
+    raw = np.sign(V[:, -1])   # V[:, -1]= # eigenvector corresponding to the largest eigenvalue
+    raw[raw == 0] = 1.0
+
+    signs = _constrain_sign_changes(raw, nSlice)
+    if signs.sum() < 0:
+        signs = -signs
+
+    return signs
+
+from sklearn.cluster import KMeans
+from itertools import product
+
+def get_navigator_bins(nav, acquired, n_bins=8, random_state=0):
+    """
+    Assign each acquired ky line to a respiratory bin (K-means).
+
+    nav : (nSamples,nLines,nSlice,nCoils) for one rep, or 5D (nRep,...).
+    Returns: idx (acquired.size,) cluster label for each acquired ky lines
+    """
+
+    nLines = nav.shape[1]
+
+    # reference everything relative to the first line, and average the relative signals across coil channels
+    ref = acquired[0]
+    tmp = np.mean(nav * np.conj(nav[:, [ref], :, :]), axis=-1)
+    # sk-learn k-means requires real-valued input, we concatenated the real and imaginary parts of the navigator
+    tmp = np.concatenate((np.real(tmp), np.imag(tmp)), axis=-1)
+
+    feats = (np.moveaxis(tmp, 1, 0).reshape(nLines, -1)[acquired])
+    feats = feats - feats.mean(0, keepdims=True)
+
+    idx = KMeans(n_bins, random_state=random_state, n_init=20).fit_predict(feats)
+
+    return idx
+
+def refine_unwrap_with_navigator_bins(field_unwrapped, nav, acquired, nSlice, n_bins=8, n_pass=3, anchor=True,verbose=True):
+    """
+    Refine an already-unwrapped field using respiratory bins from the navigator.
+
+    1. INTRA-bin: Lines belonging to the same respiratory bin are brought to the same 2*pi branch
+    using the bin median as reference.
+
+    2. INTER-bin: The optimization is performed in the actual ky acquisition order.
+    Each respiratory bin is shifted as a whole by -2*pi, 0, or +2*pi.
+    We search for the combination of shifts that gives the smoothest temporal evolution
+    of the phase along the ky acquisition sequence by minimizing the cost.
+
+    3. INTER-slice: Optionally anchor each slice so its median lies on the branch nearest 0.
+
+    Parameters
+    ----------
+    field_unwrapped (ndarray): Already-unwrapped field in radians (shape (nLines, nSlice))
+    nav (ndarray): Navigator data for one repetition.
+    nSlice (int): Number of slices.
+    n_bins (int): Number of respiratory bins.
+    n_pass (int): Number of intra-bin refinement passes.
+    anchor (bool): Whether to apply inter-slice branch anchoring.
+    verbose (bool): Whether to print correction information.
+
+    Returns
+    -------
+    out (ndarray): Refined field.
+    """
+
+    TWO_PI = 2 * np.pi
+    out = np.asarray(field_unwrapped, float).copy()
+    # Assign each acquired ky line to a respiratory bin.
+    idx = get_navigator_bins(nav, acquired, n_bins)
+    # Get all valid respiratory bin labels.
+    bins = np.unique(idx)
+    bin_lines = {b: acquired[idx == b] for b in bins}
+
+    n_intra = np.zeros(nSlice, int)
+    n_inter = np.zeros(nSlice, int)
+
+    # ----------------------------------------------------------------------
+    # 1. INTRA-BIN
+    for sl in range(nSlice):
+        for b in bins:
+            line_idx = bin_lines[b]
+
+            if line_idx.size < 3:
+                raise ValueError( f"Respiratory bin {b} contains only {bin_lines[b].size} acquired lines; at least 3 are required.")
+
+            for _ in range(n_pass):
+                # Use the bin median as the local phase reference.
+                cons = np.median(out[line_idx, sl])
+                k = np.round((out[line_idx, sl] - cons) / TWO_PI)
+
+                if not np.any(k):
+                    break
+
+                # Bring all lines onto the same 2*pi branch.
+                out[line_idx, sl] -= TWO_PI * k
+                n_intra[sl] += int(np.count_nonzero(k))
+
+    # ----------------------------------------------------------------------
+    # 2. INTER-BIN OPTIMIZATION
+
+    for sl in range(nSlice):
+
+        # Phase sequence in actual ky order
+        phase = out[acquired, sl].copy()
+
+        # --------------------------------------------------------------
+        # Cost function: We use the temporal ky sequence.
+        # First differences: d[i] = phase[i+1] - phase[i]
+        # Second differences: dd[i] = d[i+1] - d[i]
+        # This penalizes abrupt changes in the temporal dynamics rather
+        # than simply forcing the phase values to be close.
+
+        def compute_cost(shifts):
+
+            corrected_phase = (phase + TWO_PI * shifts[idx])
+            delta = np.diff(corrected_phase)
+
+            if delta.size < 2:
+                return 0.0
+
+            second_delta = np.diff(delta)
+
+            # Robust L1 cost
+            return np.sum(np.abs(second_delta))
+
+        # --------------------------------------------------------------
+        # A global phase shift is arbitrary, so the bigger bin is choose as refernce.
+        reference_bin = max(bins, key=lambda b: bin_lines[b].size)
+        other_bins = [b for b in bins if b != reference_bin]
+
+        # --------------------------------------------------------------
+        # Current configuration
+        current_shifts = np.zeros(bins.max() + 1, dtype=int)
+        current_cost = compute_cost(current_shifts)
+
+        # --------------------------------------------------------------
+        # Search all combinations of {-1, 0, +1} shifts.
+        # The variables are BIN shifts, not individual ky-line shifts.
+        # Therefore if a bin is shifted, all lines belonging to that bin
+        # are shifted by the same amount.
+
+        best_shifts = current_shifts.copy()
+        best_cost = current_cost
+
+        for candidate_values in product([-1, 0, 1], repeat=len(other_bins)):
+            candidate_shifts = current_shifts.copy()
+
+            for b, k in zip(other_bins, candidate_values):
+                candidate_shifts[b] = k
+
+            cost = compute_cost(candidate_shifts)
+
+            if cost < best_cost:
+                best_cost = cost
+                best_shifts = candidate_shifts.copy()
+
+        # --------------------------------------------------------------
+        # Apply only if the global cost is actually improved
+
+        if best_cost < current_cost:
+            n_corrected = 0
+
+            for b in bins:
+                k = best_shifts[b]
+
+                if k == 0:
+                    continue
+
+                line_idx = bin_lines[b]
+
+                out[line_idx, sl] += TWO_PI * k
+
+                n_inter[sl] += 1
+                n_corrected += 1
+
+                if verbose:
+                    print(f"Slice {sl}: corrected bin {b} by {k:+d} × 2π ")
+
+            if verbose:
+                print(f"Slice {sl}: global inter-bin optimization "
+                    f"{current_cost:.2f} → {best_cost:.2f}, "
+                    f"{n_corrected} bin(s) corrected")
+        else:
+            if verbose:
+                print(f"Slice {sl}: global inter-bin optimization "
+                    f"made no correction "
+                    f"(cost = {current_cost:.2f})")
+
+    # ----------------------------------------------------------------------
+    # 3. INTER-SLICE
+    if anchor:
+        for sl in range(nSlice):
+            out[acquired, sl] -= TWO_PI * np.round(np.median(out[acquired, sl]) / TWO_PI)
+
+    if verbose:
+        print(f"bins used: {len(bins)}")
+        print(f"  intra-bin corrections/slice: {list(n_intra)}")
+        print(f"  inter-bin ky-order corrections/slice: {list(n_inter)}")
+
+    return out
