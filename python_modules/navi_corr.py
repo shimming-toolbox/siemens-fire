@@ -510,6 +510,25 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     print("Computing corrections...")
     field_estimates = get_field_estimates(navigator, navigator_masked, raw.noise.data.T, nSlice, navigator_te) # rad/s
 
+    def get_acquired_lines(S, rep=0):
+        energy = np.abs(S[rep]).sum(axis=(0, 3))       # (nKy, nSlice)
+        return np.where(energy.sum(axis=1) > 0)[0]
+
+    rep = 0
+    acquired = get_acquired_lines(S, rep)
+
+    phase_extractions = unwrap_field_with_median_reference(phase_extractions, acquired, nSlice)
+
+    # Compute and apply noise pre-whitening transform on navigator for binning
+    Psi = np.cov(raw.noise.data)
+    L = np.linalg.cholesky(Psi)
+    W = np.linalg.inv(L).conj().T
+    nav = np.tensordot(S[rep], W, axes=((-1,), (0,)))
+
+    refined = refine_unwrap_with_navigator_bins( phase_extractions[rep], nav,
+                                                acquired, nSlice, n_bins=8,)
+    phase_extractions[rep] = refined 
+
     # Apply navigator correction
     print("K-Space correction...")
 
