@@ -1019,9 +1019,19 @@ def refine_unwrap_with_navigator_bins(field_unwrapped, nav, acquired, nSlice, n_
     out = np.asarray(field_unwrapped, float).copy()
     # Assign each acquired ky line to a respiratory bin.
     idx = get_navigator_bins(nav, acquired, n_bins)
-    # Get all valid respiratory bin labels.
-    bins = np.unique(idx)
-    bin_lines = {b: acquired[idx == b] for b in bins}
+
+    while True:
+        # Get all valid respiratory bin labels.
+        bins = np.unique(idx)
+        bin_lines = {b: acquired[idx == b] for b in bins}
+
+        # Check that every bin contains at least 3 lines.
+        if all(lines.size >= 3 for lines in bin_lines.values()):
+            break
+
+        # Reduce the number of bins and recompute the assignment.
+        n_bins -= 1
+        idx = get_navigator_bins(nav, acquired, n_bins)
 
     n_intra = np.zeros(nSlice, int)
     n_inter = np.zeros(nSlice, int)
