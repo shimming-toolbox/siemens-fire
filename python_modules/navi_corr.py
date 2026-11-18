@@ -65,7 +65,7 @@ def process(connection, config, mrdHeader):
     finally:
         connection.send_close()
 
-def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, output_dir, raw, CROP_SIZE):
+def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, output_dir, raw, CROP_SIZE, sorted_sl_indices, dz):
     """
     Reconstruct reference volume from echo 0 and save as NIfTI.
     Slices are stored in anatomical order (inf→sup) for SCT centerline detection.
@@ -137,36 +137,11 @@ def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, 
     y_lo  = (nKy // 2) - CROP_HALF
 
     # --------------------------------------------------
-    # GET PHYSICAL SLICE POSITIONS → ANATOMICAL ORDER
-    # --------------------------------------------------
-    slice_z_positions = {}
-    for acq in raw.acquisitions:
-        sl = acq.idx.slice
-        if sl not in slice_z_positions:
-            slice_z_positions[sl] = acq.position[2]
-
-    sorted_sl_indices = sorted(slice_z_positions, key=slice_z_positions.get)
-
-    print(f"\n  Anatomical slice order :")
-    for anat_idx, sl in enumerate(sorted_sl_indices):
-        print(f"    anat[{anat_idx}] = ISMRMRD sl={sl}  "
-              f"z={slice_z_positions[sl]:.2f} mm")
-
-    # --------------------------------------------------
     # FILL ref_volume IN ANATOMICAL ORDER
     # --------------------------------------------------
     n_sorted   = len(sorted_sl_indices)
     ref_volume = np.zeros((n_sorted, CROP_SIZE, CROP_SIZE), dtype=np.float32)
     ref_volume_full = np.zeros((n_sorted, nKx_recon, nKy), dtype=np.float32)
-
-    # dz from physical slice positions — more reliable than FOV z / nSlice
-    # which gives slice thickness (5mm) not slice spacing
-    if len(sorted_sl_indices) > 1:
-        z0 = slice_z_positions[sorted_sl_indices[0]]
-        z1 = slice_z_positions[sorted_sl_indices[1]]
-        dz = abs(z1 - z0)
-    else:
-        dz = 5.0   # fallback
 
     for anat_idx, sl in enumerate(sorted_sl_indices):
         if sl >= images_slices.shape[0]:
@@ -200,6 +175,42 @@ def build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, fov_x, fov_y, 
 
     return ref_path
 
+def compute_slice_order(acquisitions, verbose=True):
+    """
+    Determine the anatomical slice order based on the physical slice positions.
+
+    Parameters
+    ----------
+    acquisitions (list): List of ISMRMRD acquisitions 
+
+    Returns
+    -------
+    sorted_sl_indices (list): ISMRMRD slice indices sorted in anatomical order
+    slice_rank (dict):  Mapping from ISMRMRD slice index to its anatomical rank.
+    dz (float):  Median inter-slice spacing in millimeters.
+    """
+
+    normal = np.array(acquisitions[0].slice_dir, dtype=float)
+    normal /= np.linalg.norm(normal)
+
+    slice_positions = {}
+    for acq in acquisitions:
+        sl = acq.idx.slice
+        if sl not in slice_positions:
+            slice_positions[sl] = float(np.dot(np.array(acq.position, dtype=float), normal))
+
+    sorted_sl_indices = sorted(slice_positions, key=slice_positions.get, reverse=True)
+    slice_rank = {sl: r for r, sl in enumerate(sorted_sl_indices)}
+    z = np.array([slice_positions[sl] for sl in sorted_sl_indices])
+    dz = float(np.median(np.diff(z)))
+
+    if verbose:
+        print(f"\n  Anatomical slice order (normal = {np.round(normal, 3)}) :")
+        for anat_idx, sl in enumerate(sorted_sl_indices):
+            print(f"    anat[{anat_idx}] = ISMRMRD sl={sl}; pos={slice_positions[sl]:.2f} mm")
+        print(f"  dz = {dz:.2f} mm")
+
+    return sorted_sl_indices, slice_rank, dz
 
 def run_sct_deepseg(output_dir, nKy, nKx_recon, nSlice, CROP_SIZE):
     """
@@ -431,6 +442,9 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     # Remove useless acquisitions at the beginning of each rep
     raw.remove_phase_stabilization_references()
 
+    #  Rank the slice in an anatomical order based on their physical positions
+    sorted_sl_indices, slice_rank, dz = compute_slice_order(raw.acquisitions)
+
     # Build kspace and navigator data structure
     print("Building kspace array...")
     kspace, navigator = None, None
@@ -454,7 +468,7 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     CENTERLINE_DIR = Path("/workspaces/siemens-fire/Icesimu_output/sct_centerline")
     CROP_SIZE = 150
 
-    ref_path = build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, FOV_x, FOV_y, CENTERLINE_DIR, raw, CROP_SIZE)
+    ref_path = build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, FOV_x, FOV_y, CENTERLINE_DIR, raw, CROP_SIZE, sorted_sl_indices, dz)
     print(f"Reference volume ready : {ref_path}")
     print("SCT centerline detection will now be run on this volume.")
 
@@ -595,7 +609,7 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
         if key not in header_map:
             header_map[key] = acq.getHead()
     acq_headers = [header_map[(c, s)] for c in range(nEcho) for s in range(nSlice)]
-    ismrmrd_images = convert_to_ismrmrd_images(images, acq_headers, field_of_view)
+    ismrmrd_images = convert_to_ismrmrd_images(images, acq_headers, field_of_view, nSlice, slice_rank)
     
     print("Sending images...")
     return ismrmrd_images
@@ -606,16 +620,18 @@ def mag_images(images):
 def convert_to_int16(data):
     return np.around(data * (2**12 - 1)/data.max()).astype(np.int16)
 
-def convert_to_ismrmrd_images(images, acq_headers, fov):
+def convert_to_ismrmrd_images(images, acq_headers, fov, nSlice, slice_rank):
     images_out = []
     *_, y, x = images.shape
     data = convert_to_int16(images)
     for i, acq in enumerate(acq_headers):
         img = data[acq.idx.contrast, acq.idx.slice, :, :]
+        rank = slice_rank[acq.idx.slice]
         ismrmrd_image = ismrmrd.Image.from_array(img, transpose=False)
         ismrmrd_image.setHead(mrdhelper.update_img_header_from_raw(ismrmrd_image.getHead(), acq))
         ismrmrd_image.field_of_view = fov
-        ismrmrd_image.image_index = acq.idx.slice + data.shape[1] * acq.idx.contrast + 1
+        ismrmrd_image.slice = rank   # Anatomical order
+        ismrmrd_image.image_index = rank + nSlice * acq.idx.contrast + 1
         ismrmrd_image.image_series_index = acq.idx.repetition
         tmp_meta = ismrmrd.Meta()
         tmp_meta['DataRole']               = 'Image'
@@ -623,6 +639,9 @@ def convert_to_ismrmrd_images(images, acq_headers, fov):
         tmp_meta['Keep_image_geometry']    = 1
         ismrmrd_image.attribute_string = tmp_meta.serialize()
         images_out.append(ismrmrd_image)
+
+        print(f"acq sl={acq.idx.slice:3d} contrast={acq.idx.contrast} rep={acq.idx.repetition}"
+        f"-> slice={ismrmrd_image.slice:3d} image_index={ismrmrd_image.image_index:4d} pos={[round(p, 2) for p in ismrmrd_image.position]}")
     return images_out
 
 def raw_to_image(raw, nKx, nKx_recon, axes=(2, 3), noise_data=None):
