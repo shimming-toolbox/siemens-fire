@@ -10,12 +10,14 @@ from pathlib import Path
 import nibabel as nib
 import pandas as pd
 from dipy.denoise.localpca import mppca
+import os
 
 from common import SiemensRAW, KSPACE_LAYOUT
 from grappa import grappa
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
+dataFolder = "/tmp/share/saved_data"
 
 def process(connection, config, mrdHeader):
     logging.info("Config: \n%s", config)
@@ -465,7 +467,8 @@ def process_raw(raw, mrdHeader, use_memmap=False, denoise_images=False):
     # --------------------------------------------------
     # Build reference volume and save it under NifTi
     # TODO: Change this path to something else than workspaces
-    CENTERLINE_DIR = Path("/workspaces/siemens-fire/Icesimu_output/sct_centerline")
+    # CENTERLINE_DIR = Path("/workspaces/siemens-fire/Icesimu_output/sct_centerline")
+    CENTERLINE_DIR= os.path.join(dataFolder, "sct_canal_mask")
     CROP_SIZE = 150
 
     ref_path = build_reference_volume(kspace, acs_mask, nKx, nKy, nKx_recon, FOV_x, FOV_y, CENTERLINE_DIR, raw, CROP_SIZE, sorted_sl_indices, dz)
