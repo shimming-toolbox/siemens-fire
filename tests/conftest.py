@@ -13,8 +13,12 @@ SERVER_URL = f"http://localhost:{SERVER_PORT}"
 
 
 """
+If the server hangs, you can check if the server is running and kill it manually using the following commands:
+
+# List PIDs of processes using port 9020
 sudo lsof -i :9020
-kill -9 PID
+# Replace PID with the correct PID from the previous command
+kill -9 <PID>
 """
 
 @pytest.fixture(scope="function", autouse=True)

@@ -54,3 +54,7 @@ def test_nomad(tmpdir):
 
     fname_shim_file = os.path.join(__TMP_SHARE_SAVEDDATA__, "scanner_shim.txt")
     assert os.path.exists(fname_shim_file)
+    with open(fname_shim_file, "r") as f:
+        lines = f.readlines()
+        print(lines[0])
+        assert lines[0] == "28.000000, 0.000000, -0.004798, -0.010999, \n"
