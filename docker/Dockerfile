@@ -73,7 +73,7 @@ RUN mkdir -p /opt/code/siemens-fire
 WORKDIR /opt/code/siemens-fire
 COPY ./pyproject.toml ./uv.lock /opt/code/siemens-fire/
 RUN uv sync --frozen
-COPY ./python_modules /opt/code/siemens-fire/
+COPY ./python_modules /opt/code/siemens-fire/python_modules/
 COPY ./scripts ./opt/code/siemens-fire/
 
 # Add dev user (for development purposes only)
